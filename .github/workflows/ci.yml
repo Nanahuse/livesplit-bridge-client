@@ -37,17 +37,17 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
-      - name: Create test environment
-        run: uv venv --python ${{ matrix.python-version }} .venv
+      - name: Create test project
+        run: uv init --bare --no-workspace .tmp/test-project
 
-      - name: Install library from source
-        run: uv pip install --python .venv . 'pytest>=8,<10'
+      - name: Install library with uv add
+        run: uv add --project .tmp/test-project . 'pytest>=8,<10'
 
       - name: Verify installed library
-        run: .\.venv\Scripts\python.exe -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__, b.__file__"
+        run: uv run --project .tmp/test-project python -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__, b.__file__"
 
       - name: Test installed library
-        run: .\.venv\Scripts\pytest.exe -q tests
+        run: uv run --project .tmp/test-project pytest -q tests
 
   quality:
     name: Quality
@@ -68,17 +68,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
+      - name: Sync quality dependencies
+        run: uv sync --group dev --no-install-project
+
       - name: Lint
-        run: uvx --from ruff==0.16.4 ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Format
-        run: uvx --from ruff==0.16.4 ruff format --check .
-
-      - name: Create quality environment
-        run: uv venv --python 3.14 .venv
-
-      - name: Install type-check dependencies
-        run: uv pip install --python .venv 'protobuf>=6.31,<7' 'pytest>=8,<10' 'pyzmq>=26,<28' 'ty==0.0.74'
+        run: uv run --no-sync ruff format --check .
 
       - name: Generate protocol stubs
         run: uv run tools/generate_protocol_stubs.py --output .tmp/protocol-stubs

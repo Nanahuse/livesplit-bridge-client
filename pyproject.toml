@@ -19,8 +19,8 @@ Protocol = "https://github.com/Nanahuse/LiveSplit.Bridge"
 dev = [
     "hatchling>=1.27,<2",
     "pytest>=8,<10",
-    "ruff>=0.16.1",
-    "ty>=0.0.65",
+    "ruff==0.16.4",
+    "ty==0.0.74",
 ]
 
 [build-system]
