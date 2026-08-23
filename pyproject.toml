@@ -42,7 +42,6 @@ include = [
     "/LICENSE",
     "/README.md",
     "/pyproject.toml",
-    "/uv.lock",
 ]
 
 [tool.pytest.ini_options]

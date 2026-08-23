@@ -35,13 +35,19 @@ jobs:
           version: "0.12.5"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-          cache-dependency-glob: uv.lock
+          cache-dependency-glob: pyproject.toml
 
-      - name: Restore environment
-        run: uv sync --locked
+      - name: Build wheel
+        run: uv build --wheel --out-dir dist
 
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Test installed wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1
+          if ($null -eq $wheel) {
+            throw 'Expected a wheel distribution'
+          }
+          uv run --no-project --isolated --with $wheel.FullName --with 'pytest>=8,<10' python -c "import livesplit_bridge as b, pytest; assert 'site-packages' in b.__file__; raise SystemExit(pytest.main(['-q']))"
 
   quality:
     name: Quality and distributions
@@ -60,16 +66,13 @@ jobs:
           version: "0.12.5"
           python-version: "3.14"
           enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - name: Restore environment
-        run: uv sync --locked
+          cache-dependency-glob: pyproject.toml
 
       - name: Lint and type-check
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
-          uv run ty check --error-on-warning
+          uvx --from ruff==0.16.4 ruff check .
+          uvx --from ruff==0.16.4 ruff format --check .
+          uvx --from ty==0.0.74 ty check --error-on-warning
 
       - name: Build distributions
         run: uv build
@@ -97,4 +100,4 @@ jobs:
             }
           }
 
-          uv run --isolated --with $wheel.FullName python -c "import livesplit_bridge as b; assert b.bridge_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/bridge.proto'; assert b.common_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/common.proto'"
+          uv run --no-project --isolated --with $wheel.FullName python -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__; assert b.bridge_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/bridge.proto'; assert b.common_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/common.proto'"
