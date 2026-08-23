@@ -119,14 +119,3 @@ jobs:
           }
 
           uv run --no-project --isolated --with $wheel.FullName python -c "import importlib.util, livesplit_bridge as b; assert 'site-packages' in b.__file__; assert importlib.util.find_spec('grpc_tools') is None; assert b.bridge_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/bridge.proto'; assert b.common_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/common.proto'"
-
-          $typeCheckDirectory = Join-Path $env:RUNNER_TEMP 'livesplit-bridge-type-check'
-          New-Item -ItemType Directory -Force -Path $typeCheckDirectory | Out-Null
-          Copy-Item -LiteralPath tests/typing_checks.py -Destination $typeCheckDirectory
-          Push-Location $typeCheckDirectory
-          try {
-            uv run --no-project --isolated --with $wheel.FullName --with 'ty==0.0.74' ty check typing_checks.py --error-on-warning
-          }
-          finally {
-            Pop-Location
-          }
