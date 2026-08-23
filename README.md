@@ -62,8 +62,10 @@ with BridgeEventSubscriber(timeout_ms=5000) as events:
 ## 開発
 
 ```powershell
+uv venv .venv
+uv pip install --python .venv . pytest
+.\.venv\Scripts\pytest.exe -q tests
 uv build
-uv run tools/test_installed.py
-uv run tools/typecheck.py
+uv run tools/generate_protocol_stubs.py --output .tmp/protocol-stubs
 uv run tools/verify_distributions.py dist
 ```

@@ -37,8 +37,17 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
-      - name: Test library installed with uv add
-        run: uv run tools/test_installed.py
+      - name: Create test environment
+        run: uv venv --python ${{ matrix.python-version }} .venv
+
+      - name: Install library from source
+        run: uv pip install --python .venv . 'pytest>=8,<10'
+
+      - name: Verify installed library
+        run: .\.venv\Scripts\python.exe -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__, b.__file__"
+
+      - name: Test installed library
+        run: .\.venv\Scripts\pytest.exe -q tests
 
   quality:
     name: Quality
@@ -65,8 +74,17 @@ jobs:
       - name: Format
         run: uvx --from ruff==0.16.4 ruff format --check .
 
-      - name: Type-check source with generated protocol stubs
-        run: uv run tools/typecheck.py
+      - name: Create quality environment
+        run: uv venv --python 3.14 .venv
+
+      - name: Install type-check dependencies
+        run: uv pip install --python .venv 'protobuf>=6.31,<7' 'pytest>=8,<10' 'pyzmq>=26,<28' 'ty==0.0.74'
+
+      - name: Generate protocol stubs
+        run: uv run tools/generate_protocol_stubs.py --output .tmp/protocol-stubs
+
+      - name: Type-check
+        run: .\.venv\Scripts\ty.exe check --python .venv --extra-search-path .tmp/protocol-stubs --error-on-warning
 
   distributions:
     name: Distributions
