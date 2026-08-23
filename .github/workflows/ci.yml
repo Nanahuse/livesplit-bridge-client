@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} tests
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Restore environment
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  quality:
+    name: Quality and distributions
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Restore environment
+        run: uv sync --locked
+
+      - name: Lint and type-check
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run ty check --error-on-warning
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify distribution contents
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1
+          $sdist = Get-ChildItem -LiteralPath dist -Filter '*.tar.gz' | Select-Object -First 1
+          if ($null -eq $wheel -or $null -eq $sdist) {
+            throw 'Expected both wheel and source distribution'
+          }
+
+          $wheelEntries = @(tar -tf $wheel.FullName)
+          $sdistEntries = @(tar -tf $sdist.FullName)
+          foreach ($entries in @($wheelEntries, $sdistEntries)) {
+            if (-not ($entries -match 'livesplit/bridge/v1/bridge\.proto$')) {
+              throw 'bridge.proto is missing from a distribution'
+            }
+            if (-not ($entries -match 'livesplit/bridge/v1/common\.proto$')) {
+              throw 'common.proto is missing from a distribution'
+            }
+            if ($entries -match '_pb2\.(py|pyi)$') {
+              throw 'A generated protobuf module was included in a distribution'
+            }
+          }
+
+          uv run --isolated --with $wheel.FullName python -c "import livesplit_bridge as b; assert b.bridge_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/bridge.proto'; assert b.common_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/common.proto'"
