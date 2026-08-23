@@ -37,20 +37,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
-      - name: Build wheel
-        run: uv build --wheel --out-dir dist
-
-      - name: Test installed wheel
-        shell: pwsh
-        run: |
-          $wheel = Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1
-          if ($null -eq $wheel) {
-            throw 'Expected a wheel distribution'
-          }
-          uv run --no-project --isolated --with $wheel.FullName --with 'pytest>=8,<10' python -c "import importlib.util, livesplit_bridge as b, pytest; assert 'site-packages' in b.__file__; assert importlib.util.find_spec('grpc_tools') is None; raise SystemExit(pytest.main(['-q']))"
+      - name: Test library installed with uv add
+        run: uv run tools/test_installed.py
 
   quality:
-    name: Quality and distributions
+    name: Quality
     runs-on: windows-latest
     timeout-minutes: 10
 
@@ -69,47 +60,35 @@ jobs:
           cache-dependency-glob: pyproject.toml
 
       - name: Lint
-        run: |
-          uvx --from ruff==0.16.4 ruff check .
-          uvx --from ruff==0.16.4 ruff format --check .
+        run: uvx --from ruff==0.16.4 ruff check .
+
+      - name: Format
+        run: uvx --from ruff==0.16.4 ruff format --check .
 
       - name: Type-check source with generated protocol stubs
         run: uv run tools/typecheck.py
+
+  distributions:
+    name: Distributions
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
       - name: Build distributions
         run: uv build
 
       - name: Verify distribution contents
-        shell: pwsh
-        run: |
-          $wheel = Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1
-          $sdist = Get-ChildItem -LiteralPath dist -Filter '*.tar.gz' | Select-Object -First 1
-          if ($null -eq $wheel -or $null -eq $sdist) {
-            throw 'Expected both wheel and source distribution'
-          }
-
-          $wheelEntries = @(tar -tf $wheel.FullName)
-          $sdistEntries = @(tar -tf $sdist.FullName)
-          foreach ($entries in @($wheelEntries, $sdistEntries)) {
-            if (-not ($entries -match 'livesplit/bridge/v1/bridge\.proto$')) {
-              throw 'bridge.proto is missing from a distribution'
-            }
-            if (-not ($entries -match 'livesplit/bridge/v1/common\.proto$')) {
-              throw 'common.proto is missing from a distribution'
-            }
-            foreach ($generatedFile in @('bridge_pb2.py', 'bridge_pb2.pyi', 'common_pb2.py', 'common_pb2.pyi')) {
-              if (-not ($entries -match "livesplit/bridge/v1/$([regex]::Escape($generatedFile))$")) {
-                throw "$generatedFile is missing from a distribution"
-              }
-            }
-            foreach ($typeMarker in @('livesplit_bridge/py.typed', 'livesplit/bridge/v1/py.typed')) {
-              if (-not ($entries -match "$([regex]::Escape($typeMarker))$")) {
-                throw "$typeMarker is missing from a distribution"
-              }
-            }
-            if ($entries -match 'uv\.lock$') {
-              throw 'uv.lock was included in a distribution'
-            }
-          }
-
-          uv run --no-project --isolated --with $wheel.FullName python -c "import importlib.util, livesplit_bridge as b; assert 'site-packages' in b.__file__; assert importlib.util.find_spec('grpc_tools') is None; assert b.bridge_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/bridge.proto'; assert b.common_pb2.DESCRIPTOR.name == 'livesplit/bridge/v1/common.proto'"
+        run: uv run tools/verify_distributions.py dist

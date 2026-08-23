@@ -63,6 +63,7 @@ with BridgeEventSubscriber(timeout_ms=5000) as events:
 
 ```powershell
 uv build
-uv run --no-project --isolated --with . --with pytest pytest
+uv run tools/test_installed.py
 uv run tools/typecheck.py
+uv run tools/verify_distributions.py dist
 ```
