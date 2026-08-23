@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import importlib
+import os
 import shutil
 import sys
 import tempfile
@@ -91,10 +92,16 @@ def load_protocol() -> tuple[ModuleType, ModuleType]:
             importlib.invalidate_caches()
             common = importlib.import_module("livesplit.bridge.v1.common_pb2")
             bridge = importlib.import_module("livesplit.bridge.v1.bridge_pb2")
-            for module in (common, bridge):
+            expected_files = (
+                generated_directory / "livesplit/bridge/v1/common_pb2.py",
+                generated_directory / "livesplit/bridge/v1/bridge_pb2.py",
+            )
+            for module, expected_file in zip((common, bridge), expected_files, strict=True):
                 module_file = module.__file__
-                if module_file is None or not Path(module_file).resolve().is_relative_to(
-                    generated_directory
+                if (
+                    module_file is None
+                    or not expected_file.is_file()
+                    or not os.path.samefile(module_file, expected_file)
                 ):
                     raise ProtocolGenerationError(
                         f"Generated module resolved outside {generated_directory}"
