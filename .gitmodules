@@ -1,0 +1,3 @@
+[submodule "external/LiveSplit.Bridge"]
+	path = external/LiveSplit.Bridge
+	url = https://github.com/Nanahuse/LiveSplit.Bridge.git
