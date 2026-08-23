@@ -1,7 +1,6 @@
-"""Protobuf modules generated at runtime from the bundled LiveSplit.Bridge schema."""
+"""Protobuf modules generated from the bundled LiveSplit.Bridge schema at build time."""
 
-from ._protocol import load_protocol
-
-bridge_pb2, common_pb2 = load_protocol()
+# These modules exist in built distributions; generated files intentionally do not exist in Git.
+from livesplit.bridge.v1 import bridge_pb2, common_pb2  # ty: ignore[unresolved-import]
 
 __all__ = ["bridge_pb2", "common_pb2"]

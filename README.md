@@ -14,7 +14,7 @@ source checkout から開発する場合は、最初に protocol submodule を�
 
 ```powershell
 git submodule update --init
-uv sync
+uv build
 ```
 
 ## 使い方
@@ -55,14 +55,13 @@ with BridgeEventSubscriber(timeout_ms=5000) as events:
 `external/LiveSplit.Bridge` は Git submodule です。通信契約の唯一の正本は
 `external/LiveSplit.Bridge/proto/livesplit/bridge/v1/*.proto` です。
 
-wheel と sdist にはこの `.proto` 原本だけを直接収録します。`*_pb2.py` や
-`*_pb2.pyi` は Git に追加せず、配布物にも含めません。Python module は実行時に
-`grpcio-tools` で OS の一時ディレクトリへ生成し、プロセス終了時に削除します。
+`*_pb2.py` と `*_pb2.pyi` は build 時にこの proto から生成し、wheel と sdist に
+収録します。生成物は Git には追加しません。インストール時や実行時のコード生成は
+行わず、`grpcio-tools` は runtime dependency に含めません。
 
 ## 開発
 
 ```powershell
-uv run ruff check .
-uv run pytest
 uv build
+uv run --no-project --isolated --with . --with pytest pytest
 ```

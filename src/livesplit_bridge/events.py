@@ -4,7 +4,6 @@ from collections.abc import Iterator
 from typing import Any, Self
 
 import zmq
-from google.protobuf.message import Message
 
 from .client import BridgeClientError, BridgeTimeoutError
 from .protocol import common_pb2
@@ -12,7 +11,7 @@ from .protocol import common_pb2
 DEFAULT_EVENT_ENDPOINT = "tcp://127.0.0.1:54001"
 
 
-class BridgeEventSubscriber(Iterator[Message]):
+class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
     """Synchronous ZeroMQ subscriber for LiveSplit.Bridge events."""
 
     def __init__(
@@ -53,7 +52,7 @@ class BridgeEventSubscriber(Iterator[Message]):
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def receive(self, *, timeout_ms: int | None = None) -> Any:
+    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent:
         if self._closed or self._socket is None:
             raise BridgeClientError("Event subscriber is closed")
         effective_timeout = self.timeout_ms if timeout_ms is None else timeout_ms
@@ -66,5 +65,5 @@ class BridgeEventSubscriber(Iterator[Message]):
                 )
         return common_pb2.BridgeEvent.FromString(self._socket.recv())
 
-    def __next__(self) -> Any:
+    def __next__(self) -> common_pb2.BridgeEvent:
         return self.receive()

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Self
 
 import zmq
-from google.protobuf.message import Message
 
 from .protocol import bridge_pb2, common_pb2
 
@@ -85,7 +84,7 @@ class BridgeClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def request(self, request: Message) -> Any:
+    def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
         if self._closed or self._socket is None:
             raise BridgeClientError("Client is closed")
         if not isinstance(request, bridge_pb2.Request):
@@ -117,15 +116,17 @@ class BridgeClient:
             raise BridgeRemoteError(response.error.code, response.error.message)
         return response
 
-    def attach(self) -> Any:
+    def attach(self) -> bridge_pb2.AttachResponse:
         response = self.request(bridge_pb2.Request(attach=bridge_pb2.AttachRequest()))
         return response.attach
 
-    def snapshot(self) -> Any:
+    def snapshot(self) -> common_pb2.TimerSnapshot:
         response = self.request(bridge_pb2.Request(get_snapshot=bridge_pb2.GetSnapshotRequest()))
         return response.get_snapshot.snapshot
 
-    def timer_operation(self, operation: int) -> Any:
+    def timer_operation(
+        self, operation: common_pb2.TimerOperationType
+    ) -> common_pb2.OperationResponse:
         response = self.request(
             bridge_pb2.Request(
                 timer_operation=bridge_pb2.TimerOperationRequest(operation=operation)
@@ -133,42 +134,44 @@ class BridgeClient:
         )
         return response.operation
 
-    def game_time_operation(self, operation: int, *, ticks: int | None = None) -> Any:
+    def game_time_operation(
+        self, operation: common_pb2.GameTimeOperationType, *, ticks: int | None = None
+    ) -> common_pb2.OperationResponse:
         operation_request = bridge_pb2.GameTimeOperationRequest(operation=operation)
         if ticks is not None:
             operation_request.ticks = ticks
         response = self.request(bridge_pb2.Request(game_time_operation=operation_request))
         return response.operation
 
-    def start(self) -> Any:
+    def start(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_START)
 
-    def split(self) -> Any:
+    def split(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_SPLIT)
 
-    def skip(self) -> Any:
+    def skip(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_SKIP)
 
-    def undo(self) -> Any:
+    def undo(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_UNDO)
 
-    def reset(self) -> Any:
+    def reset(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_RESET)
 
-    def pause(self) -> Any:
+    def pause(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_PAUSE)
 
-    def resume(self) -> Any:
+    def resume(self) -> common_pb2.OperationResponse:
         return self.timer_operation(common_pb2.TIMER_RESUME)
 
-    def initialize_game_time(self) -> Any:
+    def initialize_game_time(self) -> common_pb2.OperationResponse:
         return self.game_time_operation(common_pb2.INITIALIZE)
 
-    def set_game_time_ticks(self, ticks: int) -> Any:
+    def set_game_time_ticks(self, ticks: int) -> common_pb2.OperationResponse:
         return self.game_time_operation(common_pb2.SET, ticks=ticks)
 
-    def pause_game_time(self) -> Any:
+    def pause_game_time(self) -> common_pb2.OperationResponse:
         return self.game_time_operation(common_pb2.GAME_TIME_PAUSE)
 
-    def resume_game_time(self) -> Any:
+    def resume_game_time(self) -> common_pb2.OperationResponse:
         return self.game_time_operation(common_pb2.GAME_TIME_RESUME)

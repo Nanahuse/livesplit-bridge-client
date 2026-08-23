@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 import pytest
 import zmq
@@ -63,7 +64,7 @@ class FakeContext:
         self.terminated = True
 
 
-def encoded_response(request_id: int, **body: object) -> bytes:
+def encoded_response(request_id: int, **body: Any) -> bytes:
     return bridge_pb2.Response(
         protocol_version=1,
         request_id=request_id,
