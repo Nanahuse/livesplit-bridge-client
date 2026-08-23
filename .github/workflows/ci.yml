@@ -68,14 +68,22 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
-      - name: Lint and type-check
+      - name: Lint
         run: |
           uvx --from ruff==0.16.4 ruff check .
           uvx --from ruff==0.16.4 ruff format --check .
-          uvx --from ty==0.0.74 --with . --with 'pytest>=8,<10' ty check --ignore unused-ignore-comment --error-on-warning
 
       - name: Build distributions
         run: uv build
+
+      - name: Type-check with installed wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1
+          if ($null -eq $wheel) {
+            throw 'Expected a wheel distribution'
+          }
+          uv run tools/typecheck.py --wheel $wheel.FullName
 
       - name: Verify distribution contents
         shell: pwsh
