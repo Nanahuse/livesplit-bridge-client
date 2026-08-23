@@ -64,5 +64,5 @@ with BridgeEventSubscriber(timeout_ms=5000) as events:
 ```powershell
 uv build
 uv run --no-project --isolated --with . --with pytest pytest
-uv run tools/typecheck.py --wheel dist/livesplit_bridge_client-0.1.0-py3-none-any.whl
+uv run tools/typecheck.py
 ```

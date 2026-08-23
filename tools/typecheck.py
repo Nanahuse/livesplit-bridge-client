@@ -1,6 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
+#   "grpcio-tools==1.75.1",
 #   "protobuf>=6.31,<7",
 #   "pytest>=8,<10",
 #   "pyzmq>=26,<28",
@@ -10,28 +11,32 @@
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
+
+from grpc_tools import protoc
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--wheel", required=True, type=Path)
-    args = parser.parse_args()
-    wheel = args.wheel.resolve()
-    if not wheel.is_file():
-        parser.error(f"wheel does not exist: {wheel}")
-
     project_root = Path(__file__).resolve().parents[1]
+    proto_root = project_root / "external" / "LiveSplit.Bridge" / "proto"
+    proto_files = [
+        proto_root / "livesplit" / "bridge" / "v1" / "common.proto",
+        proto_root / "livesplit" / "bridge" / "v1" / "bridge.proto",
+    ]
     with tempfile.TemporaryDirectory(prefix="livesplit-bridge-typecheck-") as directory:
-        with zipfile.ZipFile(wheel) as archive:
-            for member in archive.infolist():
-                if member.filename.startswith("livesplit/"):
-                    archive.extract(member, directory)
+        result = protoc.main(
+            [
+                "grpc_tools.protoc",
+                f"--proto_path={proto_root}",
+                f"--pyi_out={directory}",
+                *(str(proto_file) for proto_file in proto_files),
+            ]
+        )
+        if result != 0:
+            return result
         return subprocess.run(
             [
                 "ty",

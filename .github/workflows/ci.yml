@@ -73,17 +73,11 @@ jobs:
           uvx --from ruff==0.16.4 ruff check .
           uvx --from ruff==0.16.4 ruff format --check .
 
+      - name: Type-check source with generated protocol stubs
+        run: uv run tools/typecheck.py
+
       - name: Build distributions
         run: uv build
-
-      - name: Type-check with installed wheel
-        shell: pwsh
-        run: |
-          $wheel = Get-ChildItem -LiteralPath dist -Filter '*.whl' | Select-Object -First 1
-          if ($null -eq $wheel) {
-            throw 'Expected a wheel distribution'
-          }
-          uv run tools/typecheck.py --wheel $wheel.FullName
 
       - name: Verify distribution contents
         shell: pwsh
