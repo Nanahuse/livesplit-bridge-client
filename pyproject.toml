@@ -1,0 +1,61 @@
+[project]
+name = "livesplit-bridge-client"
+version = "0.1.0"
+description = "Python client for LiveSplit.Bridge"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Nanahuse" }]
+dependencies = [
+    "protobuf>=6.31,<7",
+    "pyzmq>=26,<28",
+]
+
+[project.urls]
+Repository = "https://github.com/Nanahuse/livesplit-bridge-client"
+Protocol = "https://github.com/Nanahuse/LiveSplit.Bridge"
+
+[dependency-groups]
+dev = [
+    "hatchling>=1.27,<2",
+    "pytest>=8,<10",
+    "ruff==0.16.4",
+    "ty==0.0.74",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.hooks.custom]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/livesplit_bridge"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"external/LiveSplit.Bridge/proto/livesplit/bridge/v1" = "livesplit_bridge/proto/livesplit/bridge/v1"
+"src/livesplit_bridge/py.typed" = "livesplit_bridge/py.typed"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/external/LiveSplit.Bridge/proto/livesplit/bridge/v1/*.proto",
+    "/hatch_build.py",
+    "/src",
+    "/tests",
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = ["external"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ty.src]
+include = ["src", "tests"]

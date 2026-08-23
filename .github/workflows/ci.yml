@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} tests
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Create test project
+        run: uv init --bare --no-workspace .tmp/test-project
+
+      - name: Install library with uv add
+        run: uv add --project .tmp/test-project . 'pytest>=8,<10'
+
+      - name: Verify installed library
+        run: uv run --project .tmp/test-project python -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__, b.__file__"
+
+      - name: Test installed library
+        run: uv run --project .tmp/test-project pytest -q tests
+
+  quality:
+    name: Quality
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Sync quality dependencies
+        run: uv sync --group dev --no-install-project
+
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Format
+        run: uv run --no-sync ruff format --check .
+
+      - name: Generate protocol stubs
+        run: uv run tools/generate_protocol_stubs.py --output .tmp/protocol-stubs
+
+      - name: Type-check
+        run: .\.venv\Scripts\ty.exe check --python .venv --extra-search-path .tmp/protocol-stubs --error-on-warning
+
+  distributions:
+    name: Distributions
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify distribution contents
+        run: uv run tools/verify_distributions.py dist
