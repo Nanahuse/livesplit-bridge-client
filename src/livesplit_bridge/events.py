@@ -42,6 +42,8 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         self._socket: Any | None = socket
         self._closed = False
         self._heartbeat_deadline: float | None = None
+        if self.heartbeat_timeout_ms is not None:
+            self._heartbeat_deadline = _monotonic() + self.heartbeat_timeout_ms / 1000
 
     def close(self) -> None:
         if self._closed:
@@ -82,12 +84,12 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
     def _receive_with_heartbeat(
         self, socket: Any, effective_timeout: int | None, heartbeat_timeout_ms: int
     ) -> common_pb2.BridgeEvent:
+        deadline = self._heartbeat_deadline
+        assert deadline is not None
         now = _monotonic()
-        if self._heartbeat_deadline is None:
-            self._heartbeat_deadline = now + heartbeat_timeout_ms / 1000
-        if now >= self._heartbeat_deadline:
+        if now >= deadline:
             self._raise_heartbeat_timeout(heartbeat_timeout_ms)
-        remaining_ms = (self._heartbeat_deadline - now) * 1000
+        remaining_ms = (deadline - now) * 1000
         heartbeat_side = True
         poll_timeout = remaining_ms
         if effective_timeout is not None and effective_timeout < remaining_ms:
@@ -101,14 +103,13 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             )
         event = common_pb2.BridgeEvent.FromString(socket.recv())
         received_at = _monotonic()
-        if received_at >= self._heartbeat_deadline:
+        if received_at >= deadline:
             self._raise_heartbeat_timeout(heartbeat_timeout_ms)
         if event.type == common_pb2.EVENT_HEARTBEAT:
             self._heartbeat_deadline = received_at + heartbeat_timeout_ms / 1000
         return event
 
     def _raise_heartbeat_timeout(self, heartbeat_timeout_ms: int) -> None:
-        self._heartbeat_deadline = None
         raise BridgeHeartbeatTimeoutError(
             f"Heartbeat timed out after {heartbeat_timeout_ms} ms ({self.event_endpoint})"
         )

@@ -184,7 +184,7 @@ def test_heartbeat_deadline_expiry_after_receive(
     subscriber.close()
 
 
-def test_heartbeat_deadline_starts_with_first_receive(
+def test_heartbeat_deadline_starts_at_subscriber_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = FakeMonotonic()
@@ -195,12 +195,13 @@ def test_heartbeat_deadline_starts_with_first_receive(
 
     clock.now = 10.0
 
-    assert subscriber.receive() == event
+    with pytest.raises(BridgeHeartbeatTimeoutError, match="100 ms"):
+        subscriber.receive()
 
     subscriber.close()
 
 
-def test_receive_can_restart_heartbeat_monitoring_after_timeout(
+def test_same_subscriber_stays_expired_after_heartbeat_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = FakeMonotonic()
@@ -216,9 +217,36 @@ def test_receive_can_restart_heartbeat_monitoring_after_timeout(
     with pytest.raises(BridgeHeartbeatTimeoutError):
         subscriber.receive()
 
-    assert subscriber.receive() == heartbeat
+    with pytest.raises(BridgeHeartbeatTimeoutError):
+        subscriber.receive()
 
     subscriber.close()
+
+
+def test_new_subscriber_resumes_heartbeat_monitoring_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeMonotonic()
+    monkeypatch.setattr(events_module, "_monotonic", clock)
+    first = state_event()
+    socket = FakeSocket([first.SerializeToString()])
+    expired = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+
+    assert expired.receive() == first
+
+    clock.now = 0.15
+    with pytest.raises(BridgeHeartbeatTimeoutError):
+        expired.receive()
+    expired.close()
+
+    heartbeat = common_pb2.BridgeEvent(type=common_pb2.EVENT_HEARTBEAT)
+    socket = FakeSocket([heartbeat.SerializeToString()])
+    resumed = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+
+    clock.now = 0.18
+    assert resumed.receive() == heartbeat
+
+    resumed.close()
 
 
 def test_negative_heartbeat_timeout_is_rejected() -> None:

@@ -62,14 +62,14 @@ except BridgeTimeoutError:
 既定のイベント endpoint は `tcp://127.0.0.1:54001` です。timeout を指定しない
 場合、`receive()` はイベント到着まで待ちます。
 
-`heartbeat_timeout_ms` を指定すると、初回 `receive()` からハートビートが受信
-できなくなるまでの監視期限が始まります。期限は `EVENT_HEARTBEAT` 受信時のみ
-延長され、状態イベントでは延長されません。期限切れは
-`BridgeHeartbeatTimeoutError`（`BridgeTimeoutError` の subclass）として発生し
-ます。単発 `timeout_ms` の超過は従来どおり `BridgeTimeoutError` です。ハート
-ビート期限切れ時は通常のイベント処理を止め、`BridgeClient.snapshot()` などの
-RPC snapshot で状態を再同期してください。例外送出後は、次回 `receive()` から
-新しいハートビート監視期限が始まります。
+`heartbeat_timeout_ms` を指定すると、subscriber の生成時（SUB 接続完了時）から
+ハートビートが受信できなくなるまでの監視期限が始まります。期限は
+`EVENT_HEARTBEAT` 受信時のみ延長され、状態イベントでは延長されません。期限切れ
+は `BridgeHeartbeatTimeoutError`（`BridgeTimeoutError` の subclass）として発生し
+ます。単発 `timeout_ms` の超過は従来どおり `BridgeTimeoutError` です。期限切れ後
+は同じ subscriber が引き続き `BridgeHeartbeatTimeoutError` を送出し、監視は再開
+されません。通常のイベント処理を止めて subscriber を再生成し、SUB 接続後に
+`BridgeClient.snapshot()` などの RPC snapshot で状態を再同期してください。
 
 ハートビートは 1 秒周期で配信され、snapshot を含みません。ハートビート自身は
 `event_sequence` の対象外で、最後に送信成功または失敗が確定した sequence 対象
