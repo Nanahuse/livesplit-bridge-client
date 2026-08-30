@@ -28,6 +28,23 @@ def test_receive_decodes_bridge_event_and_subscribes_to_all_topics() -> None:
     subscriber.close()
 
 
+def test_receive_decodes_heartbeat_without_snapshot() -> None:
+    expected = common_pb2.BridgeEvent(
+        session_id=9,
+        event_sequence=4,
+        type=common_pb2.EVENT_HEARTBEAT,
+    )
+    socket = FakeSocket([expected.SerializeToString()])
+    subscriber = BridgeEventSubscriber(context=FakeContext(socket), timeout_ms=50)
+
+    actual = subscriber.receive()
+
+    assert actual.type == common_pb2.EVENT_HEARTBEAT
+    assert actual.event_sequence == expected.event_sequence
+    assert not actual.HasField("snapshot")
+    subscriber.close()
+
+
 def test_event_timeout_is_reported() -> None:
     socket = FakeSocket(poll_result=False)
     subscriber = BridgeEventSubscriber(context=FakeContext(socket), timeout_ms=25)

@@ -34,18 +34,26 @@ with BridgeClient() as client:
 既定の RPC endpoint は `tcp://127.0.0.1:54000` です。別の endpoint は
 `BridgeClient("tcp://127.0.0.1:55000")` のように指定できます。
 
-イベントは同期 iterator として購読できます。
+イベントは同期 iterator として購読できます。受信時は必ず `BridgeEvent.type` を
+先に判定してください。
 
 ```python
 from livesplit_bridge import BridgeEventSubscriber, common_pb2
 
 with BridgeEventSubscriber(timeout_ms=5000) as events:
     for event in events:
-        print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
+        if event.type == common_pb2.EVENT_HEARTBEAT:
+            print("heartbeat", event.event_sequence)
+        else:
+            print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
 ```
 
 既定のイベント endpoint は `tcp://127.0.0.1:54001` です。timeout を指定しない
 場合、`receive()` はイベント到着まで待ちます。
+
+ハートビートは 1 秒周期で配信され、snapshot を含みません。ハートビート自身は
+`event_sequence` の対象外で、最後に送信成功または失敗が確定した sequence 対象
+イベントの番号を通知します。
 
 低水準の操作では `bridge_pb2` と `common_pb2` を利用できます。enum 値と message
 定義はすべて upstream proto から生成され、クライアント側では複製していません。
