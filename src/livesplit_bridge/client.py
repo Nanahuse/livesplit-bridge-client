@@ -15,7 +15,11 @@ class BridgeClientError(RuntimeError):
 
 
 class BridgeTimeoutError(BridgeClientError):
-    """Raised when the Bridge does not respond before the configured timeout."""
+    """Raised when one RPC or event receive operation exceeds its timeout."""
+
+
+class BridgeEventStreamLostError(BridgeClientError):
+    """Raised when the event stream is no longer trustworthy because heartbeats are missing."""
 
 
 class BridgeProtocolError(BridgeClientError):

@@ -34,18 +34,50 @@ with BridgeClient() as client:
 既定の RPC endpoint は `tcp://127.0.0.1:54000` です。別の endpoint は
 `BridgeClient("tcp://127.0.0.1:55000")` のように指定できます。
 
-イベントは同期 iterator として購読できます。
+イベントは同期 iterator として購読できます。受信時は必ず `BridgeEvent.type` を
+先に判定してください。
 
 ```python
-from livesplit_bridge import BridgeEventSubscriber, common_pb2
+from livesplit_bridge import (
+    BridgeEventStreamLostError,
+    BridgeEventSubscriber,
+    BridgeTimeoutError,
+    common_pb2,
+)
 
-with BridgeEventSubscriber(timeout_ms=5000) as events:
-    for event in events:
-        print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
+try:
+    with BridgeEventSubscriber(receive_timeout_ms=5000, heartbeat_timeout_ms=3000) as events:
+        for event in events:
+            if event.type == common_pb2.EVENT_HEARTBEAT:
+                print("heartbeat", event.event_sequence)
+            else:
+                print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
+except BridgeEventStreamLostError:
+    # 通常処理を止め、subscriber を再生成し、BridgeClient.snapshot() などで再同期する
+    print("event stream lost")
+except BridgeTimeoutError:
+    print("event receive timed out")
 ```
 
-既定のイベント endpoint は `tcp://127.0.0.1:54001` です。timeout を指定しない
-場合、`receive()` はイベント到着まで待ちます。
+既定のイベント endpoint は `tcp://127.0.0.1:54001` です。受信 timeout を指定し
+ない場合、`receive()` はイベント到着まで待ちます。subscriber の既定 timeout は
+コンストラクタの `receive_timeout_ms` で指定し、`receive(timeout_ms=...)` で単発
+上書きできます。
+
+`heartbeat_timeout_ms` を指定すると、subscriber の生成時（SUB 接続完了時）から
+ハートビートが受信できなくなるまでの監視期限が始まります。期限は
+`EVENT_HEARTBEAT` 受信時のみ延長され、状態イベントでは延長されません。期限切れ
+は `BridgeEventStreamLostError`（`BridgeClientError` の subclass）として発生し、
+event stream が heartbeat 欠落により信頼不能になったことを示します。単発受信
+timeout の超過は従来どおり `BridgeTimeoutError` です（`BridgeEventStreamLostError`
+とは sibling のため catch 順に依存しません）。期限切れ後は同じ subscriber が
+引き続き `BridgeEventStreamLostError` を送出し、監視は再開されません。通常の
+イベント処理を止めて subscriber を再生成し、SUB 接続後に `BridgeClient.snapshot()`
+などの RPC snapshot で状態を再同期してください。
+
+ハートビートは 1 秒周期で配信され、snapshot を含みません。ハートビート自身は
+`event_sequence` の対象外で、最後に送信成功または失敗が確定した sequence 対象
+イベントの番号を通知します。
 
 低水準の操作では `bridge_pb2` と `common_pb2` を利用できます。enum 値と message
 定義はすべて upstream proto から生成され、クライアント側では複製していません。
