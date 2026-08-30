@@ -38,18 +38,38 @@ with BridgeClient() as client:
 先に判定してください。
 
 ```python
-from livesplit_bridge import BridgeEventSubscriber, common_pb2
+from livesplit_bridge import (
+    BridgeEventSubscriber,
+    BridgeHeartbeatTimeoutError,
+    BridgeTimeoutError,
+    common_pb2,
+)
 
-with BridgeEventSubscriber(timeout_ms=5000) as events:
-    for event in events:
-        if event.type == common_pb2.EVENT_HEARTBEAT:
-            print("heartbeat", event.event_sequence)
-        else:
-            print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
+try:
+    with BridgeEventSubscriber(timeout_ms=5000, heartbeat_timeout_ms=3000) as events:
+        for event in events:
+            if event.type == common_pb2.EVENT_HEARTBEAT:
+                print("heartbeat", event.event_sequence)
+            else:
+                print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
+except BridgeHeartbeatTimeoutError:
+    # 通常処理を止め、BridgeClient.snapshot() などで再同期する
+    print("heartbeat timed out")
+except BridgeTimeoutError:
+    print("event receive timed out")
 ```
 
 既定のイベント endpoint は `tcp://127.0.0.1:54001` です。timeout を指定しない
 場合、`receive()` はイベント到着まで待ちます。
+
+`heartbeat_timeout_ms` を指定すると、初回 `receive()` からハートビートが受信
+できなくなるまでの監視期限が始まります。期限は `EVENT_HEARTBEAT` 受信時のみ
+延長され、状態イベントでは延長されません。期限切れは
+`BridgeHeartbeatTimeoutError`（`BridgeTimeoutError` の subclass）として発生し
+ます。単発 `timeout_ms` の超過は従来どおり `BridgeTimeoutError` です。ハート
+ビート期限切れ時は通常のイベント処理を止め、`BridgeClient.snapshot()` などの
+RPC snapshot で状態を再同期してください。例外送出後は、次回 `receive()` から
+新しいハートビート監視期限が始まります。
 
 ハートビートは 1 秒周期で配信され、snapshot を含みません。ハートビート自身は
 `event_sequence` の対象外で、最後に送信成功または失敗が確定した sequence 対象

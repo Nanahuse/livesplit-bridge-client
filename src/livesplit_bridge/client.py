@@ -18,6 +18,10 @@ class BridgeTimeoutError(BridgeClientError):
     """Raised when the Bridge does not respond before the configured timeout."""
 
 
+class BridgeHeartbeatTimeoutError(BridgeTimeoutError):
+    """Raised when no heartbeat arrives before the heartbeat deadline."""
+
+
 class BridgeProtocolError(BridgeClientError):
     """Raised when the Bridge returns a response that violates the protocol."""
 

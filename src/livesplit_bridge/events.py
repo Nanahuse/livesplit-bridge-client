@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
+from math import ceil
 from typing import Any, Self
 
 import zmq
 
-from .client import BridgeClientError, BridgeTimeoutError
+from .client import BridgeClientError, BridgeHeartbeatTimeoutError, BridgeTimeoutError
 from .protocol import common_pb2
 
 DEFAULT_EVENT_ENDPOINT = "tcp://127.0.0.1:54001"
+
+_monotonic = time.monotonic
 
 
 class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
@@ -19,12 +23,16 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         event_endpoint: str = DEFAULT_EVENT_ENDPOINT,
         *,
         timeout_ms: int | None = None,
+        heartbeat_timeout_ms: int | None = None,
         context: Any | None = None,
     ) -> None:
         if timeout_ms is not None and timeout_ms < 0:
             raise ValueError("timeout_ms must be non-negative or None")
+        if heartbeat_timeout_ms is not None and heartbeat_timeout_ms < 0:
+            raise ValueError("heartbeat_timeout_ms must be non-negative or None")
         self.event_endpoint = event_endpoint
         self.timeout_ms = timeout_ms
+        self.heartbeat_timeout_ms = heartbeat_timeout_ms
         self._context = context if context is not None else zmq.Context()
         self._owns_context = context is None
         socket = self._context.socket(zmq.SUB)
@@ -33,6 +41,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         socket.connect(event_endpoint)
         self._socket: Any | None = socket
         self._closed = False
+        self._heartbeat_deadline: float | None = None
 
     def close(self) -> None:
         if self._closed:
@@ -56,14 +65,53 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         if self._closed or self._socket is None:
             raise BridgeClientError("Event subscriber is closed")
         effective_timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        if effective_timeout is not None and effective_timeout < 0:
+            raise ValueError("timeout_ms must be non-negative or None")
+        socket = self._socket
+        if self.heartbeat_timeout_ms is not None:
+            return self._receive_with_heartbeat(
+                socket, effective_timeout, self.heartbeat_timeout_ms
+            )
         if effective_timeout is not None:
-            if effective_timeout < 0:
-                raise ValueError("timeout_ms must be non-negative or None")
-            if not self._socket.poll(effective_timeout, zmq.POLLIN):
+            if not socket.poll(effective_timeout, zmq.POLLIN):
                 raise BridgeTimeoutError(
                     f"Event receive timed out after {effective_timeout} ms ({self.event_endpoint})"
                 )
-        return common_pb2.BridgeEvent.FromString(self._socket.recv())
+        return common_pb2.BridgeEvent.FromString(socket.recv())
+
+    def _receive_with_heartbeat(
+        self, socket: Any, effective_timeout: int | None, heartbeat_timeout_ms: int
+    ) -> common_pb2.BridgeEvent:
+        now = _monotonic()
+        if self._heartbeat_deadline is None:
+            self._heartbeat_deadline = now + heartbeat_timeout_ms / 1000
+        if now >= self._heartbeat_deadline:
+            self._raise_heartbeat_timeout(heartbeat_timeout_ms)
+        remaining_ms = (self._heartbeat_deadline - now) * 1000
+        heartbeat_side = True
+        poll_timeout = remaining_ms
+        if effective_timeout is not None and effective_timeout < remaining_ms:
+            poll_timeout = effective_timeout
+            heartbeat_side = False
+        if not socket.poll(ceil(poll_timeout), zmq.POLLIN):
+            if heartbeat_side:
+                self._raise_heartbeat_timeout(heartbeat_timeout_ms)
+            raise BridgeTimeoutError(
+                f"Event receive timed out after {effective_timeout} ms ({self.event_endpoint})"
+            )
+        event = common_pb2.BridgeEvent.FromString(socket.recv())
+        received_at = _monotonic()
+        if received_at >= self._heartbeat_deadline:
+            self._raise_heartbeat_timeout(heartbeat_timeout_ms)
+        if event.type == common_pb2.EVENT_HEARTBEAT:
+            self._heartbeat_deadline = received_at + heartbeat_timeout_ms / 1000
+        return event
+
+    def _raise_heartbeat_timeout(self, heartbeat_timeout_ms: int) -> None:
+        self._heartbeat_deadline = None
+        raise BridgeHeartbeatTimeoutError(
+            f"Heartbeat timed out after {heartbeat_timeout_ms} ms ({self.event_endpoint})"
+        )
 
     def __next__(self) -> common_pb2.BridgeEvent:
         return self.receive()
