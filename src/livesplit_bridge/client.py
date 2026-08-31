@@ -163,14 +163,14 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def resume_game_time(self) -> common_pb2.OperationResponse:
         return self.rpc.resume_game_time()
 
-    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent:
+    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent | None:
         return self.events.receive(timeout_ms=timeout_ms)
 
     def __iter__(self) -> Self:
         return self
 
     def __next__(self) -> common_pb2.BridgeEvent:
-        return self.receive()
+        return next(self.events)
 
     def reconnect(self) -> common_pb2.TimerSnapshot:
         """Recreate the subscriber and RPC client on the shared context.

@@ -49,6 +49,7 @@ with BridgeClient() as client:
 `BridgeClient("tcp://127.0.0.1:55000", "tcp://127.0.0.1:55001")` のように指定
 できます。受信 timeout を指定しない場合、`receive()` はイベント到着まで待ちます。
 イベントの単発受信 timeout は `receive(timeout_ms=...)` の呼び出し単位で指定します。
+指定時間内にイベントがなければ、正常な待機結果として `None` を返します。
 Bridgeからの個々の応答期限は `response_timeout_ms` で指定し、期限内に応答がない
 場合は `BridgeResponseTimeoutError` が発生します。
 
@@ -57,8 +58,7 @@ Bridgeからの個々の応答期限は `response_timeout_ms` で指定し、期
 `EVENT_HEARTBEAT` 受信時のみ延長され、状態イベントでは延長されません。期限切れ
 は `BridgeConnectionLostError`（`BridgeClientError` の subclass）として発生し、
 heartbeat 欠落により Bridge との接続全体が喪失したことを示します。単発受信
-timeout の超過は `BridgeEventReceiveTimeoutError` です
-（`BridgeConnectionLostError` とは sibling のため catch 順に依存しません）。
+timeout は接続障害ではないため例外にはならず、`receive()` が `None` を返します。
 期限切れ後は同じ subscriber が引き続き `BridgeConnectionLostError` を送出し、
 監視は再開されません。通常のイベント処理を止め、`reconnect()` で subscriber と
 RPC client を再接続し、snapshot で状態を再同期してください。
@@ -69,10 +69,13 @@ from livesplit_bridge import BridgeClient, BridgeConnectionLostError
 with BridgeClient(heartbeat_timeout_ms=3000) as client:
     while True:
         try:
-            event = client.receive()
+            event = client.receive(timeout_ms=250)
         except BridgeConnectionLostError:
             snapshot = client.reconnect()
             # subscriber と RPC client は新しいものへ置き換わっている。snapshot を基準に処理を再開する。
+            continue
+        if event is None:
+            # 今回の待機中にイベントはなかった。
             continue
         # event を処理する
 ```

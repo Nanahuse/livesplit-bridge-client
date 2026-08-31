@@ -15,10 +15,6 @@ DEFAULT_EVENT_ENDPOINT = "tcp://127.0.0.1:54001"
 _monotonic = time.monotonic
 
 
-class BridgeEventReceiveTimeoutError(BridgeClientError):
-    """Raised when a single event receive operation exceeds its timeout."""
-
-
 class BridgeConnectionLostError(BridgeClientError):
     """Raised when the connection is considered lost because heartbeats are missing."""
 
@@ -86,7 +82,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent:
+    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent | None:
         if self._closed or self._socket is None:
             raise BridgeClientError("Event subscriber is closed")
         effective_timeout = self.receive_timeout_ms if timeout_ms is None else timeout_ms
@@ -99,14 +95,12 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             )
         if effective_timeout is not None:
             if not socket.poll(effective_timeout, zmq.POLLIN):
-                raise BridgeEventReceiveTimeoutError(
-                    f"Event receive timed out after {effective_timeout} ms ({self.event_endpoint})"
-                )
+                return None
         return common_pb2.BridgeEvent.FromString(socket.recv())
 
     def _receive_with_heartbeat(
         self, socket: Any, effective_timeout: int | None, heartbeat_timeout_ms: int
-    ) -> common_pb2.BridgeEvent:
+    ) -> common_pb2.BridgeEvent | None:
         deadline = self._heartbeat_deadline
         assert deadline is not None
         now = _monotonic()
@@ -121,9 +115,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         if not socket.poll(ceil(poll_timeout), zmq.POLLIN):
             if heartbeat_side:
                 self._raise_connection_lost(heartbeat_timeout_ms)
-            raise BridgeEventReceiveTimeoutError(
-                f"Event receive timed out after {effective_timeout} ms ({self.event_endpoint})"
-            )
+            return None
         event = common_pb2.BridgeEvent.FromString(socket.recv())
         received_at = _monotonic()
         if received_at >= deadline:
@@ -139,4 +131,6 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         )
 
     def __next__(self) -> common_pb2.BridgeEvent:
-        return self.receive()
+        while (event := self.receive()) is None:
+            pass
+        return event

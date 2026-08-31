@@ -2,7 +2,6 @@ from .client import BridgeClient
 from .events import (
     DEFAULT_EVENT_ENDPOINT,
     BridgeConnectionLostError,
-    BridgeEventReceiveTimeoutError,
     BridgeEventSubscriber,
 )
 from .protocol import bridge_pb2, common_pb2
@@ -23,7 +22,6 @@ __all__ = [
     "BridgeClient",
     "BridgeClientError",
     "BridgeConnectionLostError",
-    "BridgeEventReceiveTimeoutError",
     "BridgeEventSubscriber",
     "BridgeProtocolError",
     "BridgeRemoteError",

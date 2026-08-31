@@ -9,7 +9,6 @@ from livesplit_bridge import (
     BridgeClient,
     BridgeClientError,
     BridgeConnectionLostError,
-    BridgeEventReceiveTimeoutError,
     BridgeRemoteError,
     bridge_pb2,
     common_pb2,
@@ -79,8 +78,7 @@ def test_receive_timeout_is_forwarded() -> None:
     sub_socket = FakeSocket(poll_result=False)
     client = BridgeClient(context=FakeContext(sub_socket, FakeSocket()))
 
-    with pytest.raises(BridgeEventReceiveTimeoutError, match="7 ms"):
-        client.receive(timeout_ms=7)
+    assert client.receive(timeout_ms=7) is None
 
     client.close()
 
