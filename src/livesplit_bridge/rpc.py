@@ -14,8 +14,8 @@ class BridgeClientError(RuntimeError):
     """Base class for client and remote protocol failures."""
 
 
-class BridgeTimeoutError(BridgeClientError):
-    """Raised when one RPC or event receive operation exceeds its timeout."""
+class BridgeResponseTimeoutError(BridgeClientError):
+    """Raised when a Bridge response exceeds its deadline."""
 
 
 class BridgeProtocolError(BridgeClientError):
@@ -42,13 +42,13 @@ class BridgeRpcClient:
         self,
         rpc_endpoint: str = DEFAULT_RPC_ENDPOINT,
         *,
-        timeout_ms: int = 3000,
+        response_timeout_ms: int = 3000,
         context: Any | None = None,
     ) -> None:
-        if timeout_ms < 0:
-            raise ValueError("timeout_ms must be non-negative")
+        if response_timeout_ms < 0:
+            raise ValueError("response_timeout_ms must be non-negative")
         self.rpc_endpoint = rpc_endpoint
-        self.timeout_ms = timeout_ms
+        self.response_timeout_ms = response_timeout_ms
         self._context = context if context is not None else zmq.Context()
         self._owns_context = context is None
         self._socket: Any | None = None
@@ -109,10 +109,10 @@ class BridgeRpcClient:
         request.request_id = request_id
 
         self._socket.send(request.SerializeToString())
-        if not self._socket.poll(self.timeout_ms, zmq.POLLIN):
+        if not self._socket.poll(self.response_timeout_ms, zmq.POLLIN):
             self._reset_socket()
-            raise BridgeTimeoutError(
-                f"RPC timed out after {self.timeout_ms} ms ({self.rpc_endpoint})"
+            raise BridgeResponseTimeoutError(
+                f"No Bridge response within {self.response_timeout_ms} ms ({self.rpc_endpoint})"
             )
 
         response = bridge_pb2.Response.FromString(self._socket.recv())

@@ -48,42 +48,45 @@ with BridgeClient() as client:
 `tcp://127.0.0.1:54001` です。別の endpoint は
 `BridgeClient("tcp://127.0.0.1:55000", "tcp://127.0.0.1:55001")` のように指定
 できます。受信 timeout を指定しない場合、`receive()` はイベント到着まで待ちます。
-subscriber の既定 timeout はコンストラクタの `receive_timeout_ms` で指定し、
-`receive(timeout_ms=...)` で単発上書きできます。
+イベントの単発受信 timeout は `receive(timeout_ms=...)` の呼び出し単位で指定します。
+Bridgeからの個々の応答期限は `response_timeout_ms` で指定し、期限内に応答がない
+場合は `BridgeResponseTimeoutError` が発生します。
 
 `heartbeat_timeout_ms` を指定すると、subscriber の生成時（SUB 接続完了時）から
 ハートビートが受信できなくなるまでの監視期限が始まります。期限は
 `EVENT_HEARTBEAT` 受信時のみ延長され、状態イベントでは延長されません。期限切れ
-は `BridgeEventStreamLostError`（`BridgeClientError` の subclass）として発生し、
-event stream が heartbeat 欠落により信頼不能になったことを示します。単発受信
-timeout の超過は従来どおり `BridgeTimeoutError` です（`BridgeEventStreamLostError`
-とは sibling のため catch 順に依存しません）。期限切れ後は同じ subscriber が
-引き続き `BridgeEventStreamLostError` を送出し、監視は再開されません。通常の
-イベント処理を止め、`resynchronize()` で subscriber を再接続し、RPC snapshot で
-状態を再同期してください。
+は `BridgeConnectionLostError`（`BridgeClientError` の subclass）として発生し、
+heartbeat 欠落により Bridge との接続全体が喪失したことを示します。単発受信
+timeout の超過は `BridgeEventReceiveTimeoutError` です
+（`BridgeConnectionLostError` とは sibling のため catch 順に依存しません）。
+期限切れ後は同じ subscriber が引き続き `BridgeConnectionLostError` を送出し、
+監視は再開されません。通常のイベント処理を止め、`reconnect()` で subscriber と
+RPC client を再接続し、snapshot で状態を再同期してください。
 
 ```python
-from livesplit_bridge import BridgeClient, BridgeEventStreamLostError
+from livesplit_bridge import BridgeClient, BridgeConnectionLostError
 
 with BridgeClient(heartbeat_timeout_ms=3000) as client:
     while True:
         try:
             event = client.receive()
-        except BridgeEventStreamLostError:
-            snapshot = client.resynchronize()
-            # subscriber は新しいものへ置き換わっている。snapshot を基準に処理を再開する。
+        except BridgeConnectionLostError:
+            snapshot = client.reconnect()
+            # subscriber と RPC client は新しいものへ置き換わっている。snapshot を基準に処理を再開する。
             continue
         # event を処理する
 ```
 
-`resynchronize()` は新しい subscriber を生成して置き換えてから `snapshot()` を呼び、
-`TimerSnapshot` を返します。snapshot 取得に失敗した場合も新しい subscriber は維持
-されるため、そのまま再試行できます。
+`reconnect()` は共有する context 上で新しい subscriber を先に、新しい RPC client を
+次に生成し、新しい RPC で `snapshot()` を取得してから現在の subscriber / RPC client
+を置き換え、`TimerSnapshot` を返します。snapshot 取得に失敗した場合は新しく生成した
+subscriber / RPC client をすべて閉じ、現在の subscriber / RPC client を維持するため、
+そのまま再試行できます。
 
-`resynchronize()` は PUB/SUB と RPC の間で原子的ではありません。subscriber を SUB
-置換後に snapshot を取得しますが、event gap や duplicate の除去、返却 snapshot と
-後続イベントとの順序は保証されません。イベントを欠落させず厳密に再同期したい場合は
-呼び出し側で sequence を照合してください。
+`reconnect()` は PUB/SUB と RPC の間で原子的ではありません。新しい subscriber を
+接続してから snapshot を取得し、その後に現在の resource と置き換えますが、event gap
+や duplicate の除去、返却 snapshot と後続イベントとの順序は保証されません。イベント
+を欠落させず厳密に再同期したい場合は呼び出し側で sequence を照合してください。
 
 `BridgeClient`、`BridgeRpcClient`、`BridgeEventSubscriber` はいずれも single-thread
 専用です。同一インスタンスを複数スレッドから同時に使わないでください。

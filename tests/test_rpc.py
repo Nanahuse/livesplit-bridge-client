@@ -9,8 +9,8 @@ import zmq
 from livesplit_bridge import (
     BridgeProtocolError,
     BridgeRemoteError,
+    BridgeResponseTimeoutError,
     BridgeRpcClient,
-    BridgeTimeoutError,
     bridge_pb2,
     common_pb2,
 )
@@ -161,9 +161,9 @@ def test_protocol_mismatch_is_rejected(response: bytes, message: str) -> None:
 def test_timeout_recreates_req_socket() -> None:
     timed_out = FakeSocket(poll_result=False)
     replacement = FakeSocket()
-    client = BridgeRpcClient(context=FakeContext(timed_out, replacement), timeout_ms=12)
+    client = BridgeRpcClient(context=FakeContext(timed_out, replacement), response_timeout_ms=12)
 
-    with pytest.raises(BridgeTimeoutError, match="12 ms"):
+    with pytest.raises(BridgeResponseTimeoutError, match="12 ms"):
         client.attach()
 
     assert timed_out.closed

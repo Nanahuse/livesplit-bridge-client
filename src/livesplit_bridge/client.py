@@ -26,13 +26,13 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         rpc_endpoint: str = DEFAULT_RPC_ENDPOINT,
         event_endpoint: str = DEFAULT_EVENT_ENDPOINT,
         *,
-        rpc_timeout_ms: int = 3000,
-        receive_timeout_ms: int | None = None,
+        response_timeout_ms: int = 3000,
         heartbeat_timeout_ms: int | None = None,
         context: Any | None = None,
     ) -> None:
+        self._rpc_endpoint = rpc_endpoint
         self._event_endpoint = event_endpoint
-        self._receive_timeout_ms = receive_timeout_ms
+        self._response_timeout_ms = response_timeout_ms
         self._heartbeat_timeout_ms = heartbeat_timeout_ms
         self._context = context if context is not None else zmq.Context()
         self._owns_context = context is None
@@ -42,13 +42,12 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         try:
             self._events = BridgeEventSubscriber(
                 event_endpoint,
-                receive_timeout_ms=receive_timeout_ms,
                 heartbeat_timeout_ms=heartbeat_timeout_ms,
                 context=self._context,
             )
             self._rpc = BridgeRpcClient(
                 rpc_endpoint,
-                timeout_ms=rpc_timeout_ms,
+                response_timeout_ms=response_timeout_ms,
                 context=self._context,
             )
         except Exception:
@@ -173,13 +172,15 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def __next__(self) -> common_pb2.BridgeEvent:
         return self.receive()
 
-    def resynchronize(self) -> common_pb2.TimerSnapshot:
-        """Replace the SUB subscriber and return a fresh RPC snapshot.
+    def reconnect(self) -> common_pb2.TimerSnapshot:
+        """Recreate the subscriber and RPC client on the shared context.
 
-        A new subscriber is created and installed as the current subscriber, the old
-        subscriber is closed, then ``snapshot()`` is called. The new subscriber remains
-        current if closing the old subscriber or retrieving the snapshot fails, so the
-        caller can retry.
+        A new subscriber is created first, then a new RPC client. A fresh snapshot is
+        retrieved through the new RPC client before the new resources replace the current
+        ones. On any failure the new resources are closed and the old resources are kept,
+        so the caller can retry. After a successful switch the old subscriber and RPC
+        client are closed (old events first, then old RPC); even if closing an old
+        resource raises, the new resources remain current.
 
         This operation is not atomic across the PUB/SUB and RPC channels: event gaps or
         duplicates between the replaced subscriber and the RPC snapshot are not
@@ -187,16 +188,35 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         relative to each other.
         """
         self._ensure_open()
-        new_subscriber = BridgeEventSubscriber(
+        new_events = BridgeEventSubscriber(
             self._event_endpoint,
-            receive_timeout_ms=self._receive_timeout_ms,
             heartbeat_timeout_ms=self._heartbeat_timeout_ms,
             context=self._context,
         )
-        old_subscriber = self._events
-        assert old_subscriber is not None
-        self._events = new_subscriber
-        old_subscriber.close()
-        rpc = self._rpc
-        assert rpc is not None
-        return rpc.snapshot()
+        new_rpc: BridgeRpcClient | None = None
+        try:
+            new_rpc = BridgeRpcClient(
+                self._rpc_endpoint,
+                response_timeout_ms=self._response_timeout_ms,
+                context=self._context,
+            )
+            snapshot = new_rpc.snapshot()
+        except Exception:
+            try:
+                if new_rpc is not None:
+                    new_rpc.close()
+            finally:
+                new_events.close()
+            raise
+
+        old_events = self._events
+        old_rpc = self._rpc
+        self._events = new_events
+        self._rpc = new_rpc
+        try:
+            if old_events is not None:
+                old_events.close()
+        finally:
+            if old_rpc is not None:
+                old_rpc.close()
+        return snapshot

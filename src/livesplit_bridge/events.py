@@ -8,15 +8,19 @@ from typing import Any, Self
 import zmq
 
 from .protocol import common_pb2
-from .rpc import BridgeClientError, BridgeTimeoutError
+from .rpc import BridgeClientError
 
 DEFAULT_EVENT_ENDPOINT = "tcp://127.0.0.1:54001"
 
 _monotonic = time.monotonic
 
 
-class BridgeEventStreamLostError(BridgeClientError):
-    """Raised when the event stream is no longer trustworthy because heartbeats are missing."""
+class BridgeEventReceiveTimeoutError(BridgeClientError):
+    """Raised when a single event receive operation exceeds its timeout."""
+
+
+class BridgeConnectionLostError(BridgeClientError):
+    """Raised when the connection is considered lost because heartbeats are missing."""
 
 
 class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
@@ -95,7 +99,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             )
         if effective_timeout is not None:
             if not socket.poll(effective_timeout, zmq.POLLIN):
-                raise BridgeTimeoutError(
+                raise BridgeEventReceiveTimeoutError(
                     f"Event receive timed out after {effective_timeout} ms ({self.event_endpoint})"
                 )
         return common_pb2.BridgeEvent.FromString(socket.recv())
@@ -107,7 +111,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         assert deadline is not None
         now = _monotonic()
         if now >= deadline:
-            self._raise_event_stream_lost(heartbeat_timeout_ms)
+            self._raise_connection_lost(heartbeat_timeout_ms)
         remaining_ms = (deadline - now) * 1000
         heartbeat_side = True
         poll_timeout = remaining_ms
@@ -116,21 +120,21 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             heartbeat_side = False
         if not socket.poll(ceil(poll_timeout), zmq.POLLIN):
             if heartbeat_side:
-                self._raise_event_stream_lost(heartbeat_timeout_ms)
-            raise BridgeTimeoutError(
+                self._raise_connection_lost(heartbeat_timeout_ms)
+            raise BridgeEventReceiveTimeoutError(
                 f"Event receive timed out after {effective_timeout} ms ({self.event_endpoint})"
             )
         event = common_pb2.BridgeEvent.FromString(socket.recv())
         received_at = _monotonic()
         if received_at >= deadline:
-            self._raise_event_stream_lost(heartbeat_timeout_ms)
+            self._raise_connection_lost(heartbeat_timeout_ms)
         if event.type == common_pb2.EVENT_HEARTBEAT:
             self._heartbeat_deadline = received_at + heartbeat_timeout_ms / 1000
         return event
 
-    def _raise_event_stream_lost(self, heartbeat_timeout_ms: int) -> None:
-        raise BridgeEventStreamLostError(
-            "Event stream is no longer trustworthy because heartbeats are missing: "
+    def _raise_connection_lost(self, heartbeat_timeout_ms: int) -> None:
+        raise BridgeConnectionLostError(
+            "Connection lost because heartbeats are missing: "
             f"no heartbeat within {heartbeat_timeout_ms} ms ({self.event_endpoint})"
         )
 
