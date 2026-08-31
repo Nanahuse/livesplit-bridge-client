@@ -4,8 +4,8 @@ import pytest
 import zmq
 
 from livesplit_bridge import (
+    BridgeEventStreamLostError,
     BridgeEventSubscriber,
-    BridgeHeartbeatTimeoutError,
     BridgeTimeoutError,
     common_pb2,
 )
@@ -21,7 +21,7 @@ def test_receive_decodes_bridge_event_and_subscribes_to_all_topics() -> None:
         type=common_pb2.EVENT_TIMER_SPLIT,
     )
     socket = FakeSocket([expected.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), timeout_ms=50)
+    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=50)
 
     actual = subscriber.receive()
 
@@ -37,7 +37,7 @@ def test_receive_decodes_heartbeat_without_snapshot() -> None:
         type=common_pb2.EVENT_HEARTBEAT,
     )
     socket = FakeSocket([expected.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), timeout_ms=50)
+    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=50)
 
     actual = subscriber.receive()
 
@@ -49,7 +49,7 @@ def test_receive_decodes_heartbeat_without_snapshot() -> None:
 
 def test_event_timeout_is_reported() -> None:
     socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), timeout_ms=25)
+    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=25)
 
     with pytest.raises(BridgeTimeoutError, match="25 ms"):
         next(subscriber)
@@ -97,7 +97,7 @@ def test_heartbeat_expiry_is_not_extended_by_state_events(monkeypatch: pytest.Mo
     assert subscriber.receive() == first
 
     clock.now = 0.15
-    with pytest.raises(BridgeHeartbeatTimeoutError, match="100 ms"):
+    with pytest.raises(BridgeEventStreamLostError, match="100 ms"):
         subscriber.receive()
 
     subscriber.close()
@@ -137,7 +137,7 @@ def test_heartbeat_deadline_precedes_one_shot_timeout(
     socket = FakeSocket(poll_result=False)
     subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=50)
 
-    with pytest.raises(BridgeHeartbeatTimeoutError, match="50 ms"):
+    with pytest.raises(BridgeEventStreamLostError, match="50 ms"):
         subscriber.receive(timeout_ms=100)
 
     subscriber.close()
@@ -178,7 +178,7 @@ def test_heartbeat_deadline_expiry_after_receive(
     socket = DeadlineCrossingSocket([event.SerializeToString()])
     subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
 
-    with pytest.raises(BridgeHeartbeatTimeoutError, match="100 ms"):
+    with pytest.raises(BridgeEventStreamLostError, match="100 ms"):
         subscriber.receive()
 
     subscriber.close()
@@ -195,7 +195,7 @@ def test_heartbeat_deadline_starts_at_subscriber_creation(
 
     clock.now = 10.0
 
-    with pytest.raises(BridgeHeartbeatTimeoutError, match="100 ms"):
+    with pytest.raises(BridgeEventStreamLostError, match="100 ms"):
         subscriber.receive()
 
     subscriber.close()
@@ -214,10 +214,10 @@ def test_same_subscriber_stays_expired_after_heartbeat_timeout(
     assert subscriber.receive() == first
 
     clock.now = 0.15
-    with pytest.raises(BridgeHeartbeatTimeoutError):
+    with pytest.raises(BridgeEventStreamLostError):
         subscriber.receive()
 
-    with pytest.raises(BridgeHeartbeatTimeoutError):
+    with pytest.raises(BridgeEventStreamLostError):
         subscriber.receive()
 
     subscriber.close()
@@ -235,7 +235,7 @@ def test_new_subscriber_resumes_heartbeat_monitoring_after_timeout(
     assert expired.receive() == first
 
     clock.now = 0.15
-    with pytest.raises(BridgeHeartbeatTimeoutError):
+    with pytest.raises(BridgeEventStreamLostError):
         expired.receive()
     expired.close()
 
@@ -258,10 +258,46 @@ def test_negative_heartbeat_timeout_is_rejected() -> None:
     socket.close()
 
 
-def test_heartbeat_none_preserves_legacy_timeout_behavior() -> None:
+def test_negative_receive_timeout_is_rejected() -> None:
+    socket = FakeSocket()
+
+    with pytest.raises(ValueError, match="receive_timeout_ms"):
+        BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=-1)
+
+    socket.close()
+
+
+def test_event_stream_lost_is_not_caught_as_event_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeMonotonic()
+    monkeypatch.setattr(events_module, "_monotonic", clock)
+    socket = FakeSocket(poll_result=False)
+    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+
+    clock.now = 0.15
+    with pytest.raises(BridgeEventStreamLostError):
+        subscriber.receive()
+
+    assert not issubclass(BridgeEventStreamLostError, BridgeTimeoutError)
+    subscriber.close()
+
+
+def test_event_timeout_is_not_caught_as_event_stream_lost() -> None:
+    socket = FakeSocket(poll_result=False)
+    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=25)
+
+    with pytest.raises(BridgeTimeoutError):
+        subscriber.receive()
+
+    assert not issubclass(BridgeTimeoutError, BridgeEventStreamLostError)
+    subscriber.close()
+
+
+def test_heartbeat_none_preserves_receive_timeout_behavior() -> None:
     socket = FakeSocket(poll_result=False)
     subscriber = BridgeEventSubscriber(
-        context=FakeContext(socket), timeout_ms=25, heartbeat_timeout_ms=None
+        context=FakeContext(socket), receive_timeout_ms=25, heartbeat_timeout_ms=None
     )
 
     with pytest.raises(BridgeTimeoutError, match="25 ms"):
