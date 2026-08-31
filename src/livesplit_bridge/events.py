@@ -16,7 +16,10 @@ _monotonic = time.monotonic
 
 
 class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
-    """Synchronous ZeroMQ subscriber for LiveSplit.Bridge events."""
+    """Synchronous ZeroMQ SUB subscriber for LiveSplit.Bridge events.
+
+    This class is single-threaded: it must only be used from a single thread at a time.
+    """
 
     def __init__(
         self,
@@ -35,13 +38,22 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
         self._context = context if context is not None else zmq.Context()
         self._owns_context = context is None
-        socket = self._context.socket(zmq.SUB)
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.setsockopt(zmq.SUBSCRIBE, b"")
-        socket.connect(event_endpoint)
-        self._socket: Any | None = socket
+        self._socket: Any | None = None
         self._closed = False
         self._heartbeat_deadline: float | None = None
+        socket = self._context.socket(zmq.SUB)
+        try:
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.setsockopt(zmq.SUBSCRIBE, b"")
+            socket.connect(event_endpoint)
+        except Exception:
+            try:
+                socket.close()
+            finally:
+                if self._owns_context:
+                    self._context.term()
+            raise
+        self._socket = socket
         if self.heartbeat_timeout_ms is not None:
             self._heartbeat_deadline = _monotonic() + self.heartbeat_timeout_ms / 1000
 
@@ -49,11 +61,14 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         if self._closed:
             return
         self._closed = True
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
-        if self._owns_context:
-            self._context.term()
+        socket = self._socket
+        self._socket = None
+        try:
+            if socket is not None:
+                socket.close()
+        finally:
+            if self._owns_context:
+                self._context.term()
 
     def __enter__(self) -> Self:
         if self._closed:

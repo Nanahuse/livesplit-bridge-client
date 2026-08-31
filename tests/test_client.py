@@ -180,3 +180,38 @@ def test_close_is_idempotent_and_closed_client_rejects_requests() -> None:
 
     with pytest.raises(RuntimeError, match="closed"):
         client.attach()
+
+
+class ConnectFailingSocket(FakeSocket):
+    def connect(self, endpoint: str) -> None:
+        raise RuntimeError("connect boom")
+
+
+class SetSockoptFailingSocket(FakeSocket):
+    def setsockopt(self, option: int, value: object) -> None:
+        raise RuntimeError("setsockopt boom")
+
+
+@pytest.mark.parametrize("bad_socket", [ConnectFailingSocket(), SetSockoptFailingSocket()])
+def test_connect_failure_closes_socket_but_keeps_external_context(bad_socket: FakeSocket) -> None:
+    context = FakeContext(bad_socket)
+
+    with pytest.raises(RuntimeError):
+        BridgeClient(context=context)
+
+    assert bad_socket.closed
+    assert not context.terminated
+
+
+@pytest.mark.parametrize("bad_socket", [ConnectFailingSocket(), SetSockoptFailingSocket()])
+def test_connect_failure_closes_socket_and_terms_owned_context(
+    bad_socket: FakeSocket, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = FakeContext(bad_socket)
+    monkeypatch.setattr(zmq, "Context", lambda: context)
+
+    with pytest.raises(RuntimeError):
+        BridgeClient()
+
+    assert bad_socket.closed
+    assert context.terminated

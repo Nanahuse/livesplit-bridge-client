@@ -38,7 +38,8 @@ class BridgeRemoteError(BridgeClientError):
 class BridgeClient:
     """Synchronous ZeroMQ REQ/REP client for LiveSplit.Bridge.
 
-    A client owns one ZeroMQ socket and must not be used concurrently from multiple threads.
+    This class is single-threaded: a client owns one ZeroMQ socket and must only be used
+    from a single thread at a time.
     """
 
     def __init__(
@@ -57,12 +58,21 @@ class BridgeClient:
         self._socket: Any | None = None
         self._next_request_id = 1
         self._closed = False
-        self._connect()
+        try:
+            self._connect()
+        except Exception:
+            if self._owns_context:
+                self._context.term()
+            raise
 
     def _connect(self) -> None:
         socket = self._context.socket(zmq.REQ)
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.connect(self.rpc_endpoint)
+        try:
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.connect(self.rpc_endpoint)
+        except Exception:
+            socket.close()
+            raise
         self._socket = socket
 
     def _reset_socket(self) -> None:
@@ -74,11 +84,14 @@ class BridgeClient:
         if self._closed:
             return
         self._closed = True
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
-        if self._owns_context:
-            self._context.term()
+        socket = self._socket
+        self._socket = None
+        try:
+            if socket is not None:
+                socket.close()
+        finally:
+            if self._owns_context:
+                self._context.term()
 
     def __enter__(self) -> Self:
         if self._closed:
