@@ -46,8 +46,8 @@ from livesplit_bridge import (
 )
 
 try:
-    with BridgeEventSubscriber(receive_timeout_ms=5000, heartbeat_timeout_ms=3000) as events:
-        for event in events:
+    with BridgeEventSubscriber(receive_timeout_ms=5000, heartbeat_timeout_ms=3000) as subscriber:
+        for event in subscriber:
             if event.type == common_pb2.EVENT_HEARTBEAT:
                 print("heartbeat", event.event_sequence)
             else:
