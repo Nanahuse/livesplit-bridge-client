@@ -11,7 +11,7 @@ from livesplit_bridge import (
 )
 from livesplit_bridge import events as events_module
 
-from .test_client import FakeContext, FakeSocket
+from .test_rpc import FakeContext, FakeSocket
 
 
 def test_receive_decodes_bridge_event_and_subscribes_to_all_topics() -> None:

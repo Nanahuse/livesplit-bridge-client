@@ -1,194 +1,202 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, Self
 
 import zmq
 
+from .events import DEFAULT_EVENT_ENDPOINT, BridgeEventSubscriber
 from .protocol import bridge_pb2, common_pb2
-
-DEFAULT_RPC_ENDPOINT = "tcp://127.0.0.1:54000"
-PROTOCOL_VERSION = 1
+from .rpc import DEFAULT_RPC_ENDPOINT, BridgeClientError, BridgeRpcClient
 
 
-class BridgeClientError(RuntimeError):
-    """Base class for client and remote protocol failures."""
+class BridgeClient(Iterator[common_pb2.BridgeEvent]):
+    """Integrated synchronous client that combines RPC and event subscription.
 
+    Owns a single ZeroMQ context shared by a :class:`BridgeEventSubscriber` and a
+    :class:`BridgeRpcClient`. The subscriber is created first, then the RPC client. When
+    no ``context`` is supplied the client owns and terminates it; otherwise the caller
+    keeps ownership.
 
-class BridgeTimeoutError(BridgeClientError):
-    """Raised when one RPC or event receive operation exceeds its timeout."""
-
-
-class BridgeEventStreamLostError(BridgeClientError):
-    """Raised when the event stream is no longer trustworthy because heartbeats are missing."""
-
-
-class BridgeProtocolError(BridgeClientError):
-    """Raised when the Bridge returns a response that violates the protocol."""
-
-
-class BridgeRemoteError(BridgeClientError):
-    """Raised when the Bridge returns a structured error."""
-
-    def __init__(self, code: int, message: str) -> None:
-        self.code = code
-        self.message = message
-        super().__init__(f"Bridge error {code}: {message}")
-
-
-class BridgeClient:
-    """Synchronous ZeroMQ REQ/REP client for LiveSplit.Bridge.
-
-    This class is single-threaded: a client owns one ZeroMQ socket and must only be used
-    from a single thread at a time.
+    This class is single-threaded: it must only be used from a single thread at a time.
     """
 
     def __init__(
         self,
         rpc_endpoint: str = DEFAULT_RPC_ENDPOINT,
+        event_endpoint: str = DEFAULT_EVENT_ENDPOINT,
         *,
-        timeout_ms: int = 3000,
+        rpc_timeout_ms: int = 3000,
+        receive_timeout_ms: int | None = None,
+        heartbeat_timeout_ms: int | None = None,
         context: Any | None = None,
     ) -> None:
-        if timeout_ms < 0:
-            raise ValueError("timeout_ms must be non-negative")
-        self.rpc_endpoint = rpc_endpoint
-        self.timeout_ms = timeout_ms
+        self._event_endpoint = event_endpoint
+        self._receive_timeout_ms = receive_timeout_ms
+        self._heartbeat_timeout_ms = heartbeat_timeout_ms
         self._context = context if context is not None else zmq.Context()
         self._owns_context = context is None
-        self._socket: Any | None = None
-        self._next_request_id = 1
         self._closed = False
+        self._rpc: BridgeRpcClient | None = None
+        self._events: BridgeEventSubscriber | None = None
         try:
-            self._connect()
+            self._events = BridgeEventSubscriber(
+                event_endpoint,
+                receive_timeout_ms=receive_timeout_ms,
+                heartbeat_timeout_ms=heartbeat_timeout_ms,
+                context=self._context,
+            )
+            self._rpc = BridgeRpcClient(
+                rpc_endpoint,
+                timeout_ms=rpc_timeout_ms,
+                context=self._context,
+            )
         except Exception:
-            if self._owns_context:
-                self._context.term()
+            events = self._events
+            rpc = self._rpc
+            self._events = None
+            self._rpc = None
+            try:
+                if events is not None:
+                    events.close()
+            finally:
+                try:
+                    if rpc is not None:
+                        rpc.close()
+                finally:
+                    if self._owns_context:
+                        self._context.term()
             raise
 
-    def _connect(self) -> None:
-        socket = self._context.socket(zmq.REQ)
-        try:
-            socket.setsockopt(zmq.LINGER, 0)
-            socket.connect(self.rpc_endpoint)
-        except Exception:
-            socket.close()
-            raise
-        self._socket = socket
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise BridgeClientError("Client is closed")
 
-    def _reset_socket(self) -> None:
-        if self._socket is not None:
-            self._socket.close()
-        self._connect()
+    @property
+    def rpc(self) -> BridgeRpcClient:
+        self._ensure_open()
+        rpc = self._rpc
+        assert rpc is not None
+        return rpc
+
+    @property
+    def events(self) -> BridgeEventSubscriber:
+        self._ensure_open()
+        events = self._events
+        assert events is not None
+        return events
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        socket = self._socket
-        self._socket = None
+        events = self._events
+        rpc = self._rpc
+        self._events = None
+        self._rpc = None
         try:
-            if socket is not None:
-                socket.close()
+            if events is not None:
+                events.close()
         finally:
-            if self._owns_context:
-                self._context.term()
+            try:
+                if rpc is not None:
+                    rpc.close()
+            finally:
+                if self._owns_context:
+                    self._context.term()
 
     def __enter__(self) -> Self:
-        if self._closed:
-            raise BridgeClientError("Client is closed")
+        self._ensure_open()
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
 
     def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
-        if self._closed or self._socket is None:
-            raise BridgeClientError("Client is closed")
-        if not isinstance(request, bridge_pb2.Request):
-            raise TypeError("request must be a bridge_pb2.Request")
-
-        request_id = self._next_request_id
-        self._next_request_id += 1
-        request.protocol_version = PROTOCOL_VERSION
-        request.request_id = request_id
-
-        self._socket.send(request.SerializeToString())
-        if not self._socket.poll(self.timeout_ms, zmq.POLLIN):
-            self._reset_socket()
-            raise BridgeTimeoutError(
-                f"RPC timed out after {self.timeout_ms} ms ({self.rpc_endpoint})"
-            )
-
-        response = bridge_pb2.Response.FromString(self._socket.recv())
-        if response.protocol_version != PROTOCOL_VERSION:
-            raise BridgeProtocolError(
-                f"Protocol version mismatch: expected {PROTOCOL_VERSION}, "
-                f"got {response.protocol_version}"
-            )
-        if response.request_id != request_id:
-            raise BridgeProtocolError(
-                f"Request ID mismatch: expected {request_id}, got {response.request_id}"
-            )
-        if response.HasField("error"):
-            raise BridgeRemoteError(response.error.code, response.error.message)
-        return response
+        return self.rpc.request(request)
 
     def attach(self) -> bridge_pb2.AttachResponse:
-        response = self.request(bridge_pb2.Request(attach=bridge_pb2.AttachRequest()))
-        return response.attach
+        return self.rpc.attach()
 
     def snapshot(self) -> common_pb2.TimerSnapshot:
-        response = self.request(bridge_pb2.Request(get_snapshot=bridge_pb2.GetSnapshotRequest()))
-        return response.get_snapshot.snapshot
+        return self.rpc.snapshot()
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType
     ) -> common_pb2.OperationResponse:
-        response = self.request(
-            bridge_pb2.Request(
-                timer_operation=bridge_pb2.TimerOperationRequest(operation=operation)
-            )
-        )
-        return response.operation
+        return self.rpc.timer_operation(operation)
 
     def game_time_operation(
         self, operation: common_pb2.GameTimeOperationType, *, ticks: int | None = None
     ) -> common_pb2.OperationResponse:
-        operation_request = bridge_pb2.GameTimeOperationRequest(operation=operation)
-        if ticks is not None:
-            operation_request.ticks = ticks
-        response = self.request(bridge_pb2.Request(game_time_operation=operation_request))
-        return response.operation
+        return self.rpc.game_time_operation(operation, ticks=ticks)
 
     def start(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_START)
+        return self.rpc.start()
 
     def split(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_SPLIT)
+        return self.rpc.split()
 
     def skip(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_SKIP)
+        return self.rpc.skip()
 
     def undo(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_UNDO)
+        return self.rpc.undo()
 
     def reset(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_RESET)
+        return self.rpc.reset()
 
     def pause(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_PAUSE)
+        return self.rpc.pause()
 
     def resume(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_RESUME)
+        return self.rpc.resume()
 
     def initialize_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.INITIALIZE)
+        return self.rpc.initialize_game_time()
 
     def set_game_time_ticks(self, ticks: int) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.SET, ticks=ticks)
+        return self.rpc.set_game_time_ticks(ticks)
 
     def pause_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.GAME_TIME_PAUSE)
+        return self.rpc.pause_game_time()
 
     def resume_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.GAME_TIME_RESUME)
+        return self.rpc.resume_game_time()
+
+    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent:
+        return self.events.receive(timeout_ms=timeout_ms)
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> common_pb2.BridgeEvent:
+        return self.receive()
+
+    def resynchronize(self) -> common_pb2.TimerSnapshot:
+        """Replace the SUB subscriber and return a fresh RPC snapshot.
+
+        A new subscriber is created and installed as the current subscriber, the old
+        subscriber is closed, then ``snapshot()`` is called. The new subscriber remains
+        current if closing the old subscriber or retrieving the snapshot fails, so the
+        caller can retry.
+
+        This operation is not atomic across the PUB/SUB and RPC channels: event gaps or
+        duplicates between the replaced subscriber and the RPC snapshot are not
+        prevented, and the returned snapshot and subsequent events are not ordered
+        relative to each other.
+        """
+        self._ensure_open()
+        new_subscriber = BridgeEventSubscriber(
+            self._event_endpoint,
+            receive_timeout_ms=self._receive_timeout_ms,
+            heartbeat_timeout_ms=self._heartbeat_timeout_ms,
+            context=self._context,
+        )
+        old_subscriber = self._events
+        assert old_subscriber is not None
+        self._events = new_subscriber
+        old_subscriber.close()
+        rpc = self._rpc
+        assert rpc is not None
+        return rpc.snapshot()

@@ -7,12 +7,16 @@ from typing import Any, Self
 
 import zmq
 
-from .client import BridgeClientError, BridgeEventStreamLostError, BridgeTimeoutError
 from .protocol import common_pb2
+from .rpc import BridgeClientError, BridgeTimeoutError
 
 DEFAULT_EVENT_ENDPOINT = "tcp://127.0.0.1:54001"
 
 _monotonic = time.monotonic
+
+
+class BridgeEventStreamLostError(BridgeClientError):
+    """Raised when the event stream is no longer trustworthy because heartbeats are missing."""
 
 
 class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):

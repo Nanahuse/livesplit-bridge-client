@@ -20,33 +20,33 @@ uv build
 ## 使い方
 
 ```python
-from livesplit_bridge import BridgeConnection, common_pb2
+from livesplit_bridge import BridgeClient, common_pb2
 
-with BridgeConnection() as connection:
-    attached = connection.attach()
+with BridgeClient() as client:
+    attached = client.attach()
     print(attached.session_id)
 
-    connection.start()
-    connection.split()
-    connection.set_game_time_ticks(123_450_000)  # 12.345 秒（100 ns tick）
+    client.start()
+    client.split()
+    client.set_game_time_ticks(123_450_000)  # 12.345 秒（100 ns tick）
 
-    for event in connection:
+    for event in client:
         if event.type == common_pb2.EVENT_HEARTBEAT:
             print("heartbeat", event.event_sequence)
         else:
             print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
 ```
 
-`BridgeConnection` は RPC 操作とイベント購読を 1 つの接続として提供します。内部で
+`BridgeClient` は RPC 操作とイベント購読を 1 つの接続として提供します。内部で
 1 つの ZeroMQ context を共有し、SUB の subscriber を先に生成してから RPC client を
-生成します。RPC 操作は `BridgeClient` の公開操作をそのまま委譲します（`attach` /
+生成します。RPC 操作は `BridgeRpcClient` の公開操作をそのまま委譲します（`attach` /
 `snapshot` / `timer_operation` / `game_time_operation` と便利メソッド）。イベントは
 同期 iterator として受信でき、`receive(timeout_ms=...)` で単発受信もできます。受信
 時は必ず `BridgeEvent.type` を先に判定してください。
 
 既定の RPC endpoint は `tcp://127.0.0.1:54000`、イベント endpoint は
 `tcp://127.0.0.1:54001` です。別の endpoint は
-`BridgeConnection("tcp://127.0.0.1:55000", "tcp://127.0.0.1:55001")` のように指定
+`BridgeClient("tcp://127.0.0.1:55000", "tcp://127.0.0.1:55001")` のように指定
 できます。受信 timeout を指定しない場合、`receive()` はイベント到着まで待ちます。
 subscriber の既定 timeout はコンストラクタの `receive_timeout_ms` で指定し、
 `receive(timeout_ms=...)` で単発上書きできます。
@@ -63,14 +63,14 @@ timeout の超過は従来どおり `BridgeTimeoutError` です（`BridgeEventSt
 状態を再同期してください。
 
 ```python
-from livesplit_bridge import BridgeConnection, BridgeEventStreamLostError
+from livesplit_bridge import BridgeClient, BridgeEventStreamLostError
 
-with BridgeConnection(heartbeat_timeout_ms=3000) as connection:
+with BridgeClient(heartbeat_timeout_ms=3000) as client:
     while True:
         try:
-            event = connection.receive()
+            event = client.receive()
         except BridgeEventStreamLostError:
-            snapshot = connection.resynchronize()
+            snapshot = client.resynchronize()
             # subscriber は新しいものへ置き換わっている。snapshot を基準に処理を再開する。
             continue
         # event を処理する
@@ -85,7 +85,7 @@ with BridgeConnection(heartbeat_timeout_ms=3000) as connection:
 後続イベントとの順序は保証されません。イベントを欠落させず厳密に再同期したい場合は
 呼び出し側で sequence を照合してください。
 
-`BridgeConnection`、`BridgeClient`、`BridgeEventSubscriber` はいずれも single-thread
+`BridgeClient`、`BridgeRpcClient`、`BridgeEventSubscriber` はいずれも single-thread
 専用です。同一インスタンスを複数スレッドから同時に使わないでください。
 
 ハートビートは 1 秒周期で配信され、snapshot を含みません。ハートビート自身は
@@ -94,16 +94,16 @@ with BridgeConnection(heartbeat_timeout_ms=3000) as connection:
 
 ## 低水準 API
 
-`BridgeClient` と `BridgeEventSubscriber` は `BridgeConnection` が内部で使う低水準
+`BridgeRpcClient` と `BridgeEventSubscriber` は `BridgeClient` が内部で使う低水準
 クラスです。RPC だけ、またはイベント購読だけを単独で使いたい場合に直接利用します。
-`connection.client` / `connection.subscriber` から参照することもできます。
+`client.rpc` / `client.events` から参照することもできます。
 
 ```python
-from livesplit_bridge import BridgeClient
+from livesplit_bridge import BridgeRpcClient
 
-with BridgeClient() as client:
-    client.attach()
-    client.start()
+with BridgeRpcClient() as rpc:
+    rpc.attach()
+    rpc.start()
 ```
 
 ```python
