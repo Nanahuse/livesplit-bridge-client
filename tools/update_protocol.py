@@ -82,6 +82,8 @@ def main() -> int:
         path = OUTPUT_ROOT / generated_file
         if not path.is_file():
             raise RuntimeError(f"generated file is missing: {path}")
+
+    print(f"Successfully generated protobuf files from {repository}@{revision}")
     return 0
 
 
