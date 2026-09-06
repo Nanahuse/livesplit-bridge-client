@@ -26,8 +26,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Set up uv and Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -57,8 +55,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Set up uv and Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -71,17 +67,19 @@ jobs:
       - name: Sync quality dependencies
         run: uv sync --group dev --no-install-project
 
+      - name: Verify generated protocol
+        run: |
+          uv run tools/update_protocol.py
+          git diff --exit-code
+
       - name: Lint
         run: uv run --no-sync ruff check .
 
       - name: Format
         run: uv run --no-sync ruff format --check .
 
-      - name: Generate protocol stubs
-        run: uv run tools/generate_protocol_stubs.py --output .tmp/protocol-stubs
-
       - name: Type-check
-        run: .\.venv\Scripts\ty.exe check --python .venv --extra-search-path .tmp/protocol-stubs --error-on-warning
+        run: .\.venv\Scripts\ty.exe check --python .venv --error-on-warning
 
   distributions:
     name: Distributions
@@ -91,8 +89,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Set up uv and Python
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
