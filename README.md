@@ -10,11 +10,14 @@
 uv add livesplit-bridge-client
 ```
 
-source checkout から開発する場合は、最初に protocol submodule を初期化します。
+### protocol の更新
+
+protocol 定義の正本は [LiveSplit.Bridge](https://github.com/Nanahuse/LiveSplit.Bridge)
+にあり、`protocol-source.json` で revision を固定しています。生成済みの
+protobuf Python コードを更新する場合は、以下を実行します。
 
 ```powershell
-git submodule update --init
-uv build
+uv run tools/update_protocol.py
 ```
 
 ## 使い方
@@ -125,12 +128,16 @@ with BridgeEventSubscriber(receive_timeout_ms=5000, heartbeat_timeout_ms=3000) a
 
 ## protocol の正本と生成物
 
-`external/LiveSplit.Bridge` は Git submodule です。通信契約の唯一の正本は
-`external/LiveSplit.Bridge/proto/livesplit/bridge/v1/*.proto` です。
+通信契約の正本は `LiveSplit.Bridge` リポジトリの
+`proto/livesplit/bridge/v1/*.proto` だけです。本リポジトリは `.proto` を
+保持せず、`protocol-source.json` に固定した revision から生成した
+`*_pb2.py` / `*_pb2.pyi` を `src/livesplit/bridge/v1/` に commit して管理します。
 
-`*_pb2.py` と `*_pb2.pyi` は build 時にこの proto から生成し、wheel と sdist に
-収録します。生成物は Git には追加しません。インストール時や実行時のコード生成は
-行わず、`grpcio-tools` は runtime dependency に含めません。
+`*_pb2.py` / `*_pb2.pyi` は generated code であり直接編集しません。protocol
+を更新する場合は `LiveSplit.Bridge` 側で `.proto` を変更し、commit SHA を
+`protocol-source.json` に反映してから `uv run tools/update_protocol.py` で
+再生成します。build 時や install 時のコード生成は行わず、`grpcio-tools` は
+runtime dependency に含めません。
 
 ## 開発
 
@@ -139,6 +146,5 @@ uv init --bare --no-workspace .tmp/test-project
 uv add --project .tmp/test-project . pytest
 uv run --project .tmp/test-project pytest -q tests
 uv build
-uv run tools/generate_protocol_stubs.py --output .tmp/protocol-stubs
 uv run tools/verify_distributions.py dist
 ```

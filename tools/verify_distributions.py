@@ -11,14 +11,11 @@ import zipfile
 from pathlib import Path
 
 REQUIRED_SUFFIXES = (
-    "livesplit/bridge/v1/bridge.proto",
-    "livesplit/bridge/v1/common.proto",
     "livesplit/bridge/v1/bridge_pb2.py",
     "livesplit/bridge/v1/bridge_pb2.pyi",
     "livesplit/bridge/v1/common_pb2.py",
     "livesplit/bridge/v1/common_pb2.pyi",
     "livesplit_bridge/py.typed",
-    "livesplit/bridge/v1/py.typed",
 )
 
 
@@ -26,6 +23,8 @@ def verify(entries: list[str], archive: Path) -> None:
     for suffix in REQUIRED_SUFFIXES:
         if not any(entry.endswith(suffix) for entry in entries):
             raise RuntimeError(f"{suffix} is missing from {archive.name}")
+    if any(entry.endswith(".proto") for entry in entries):
+        raise RuntimeError(f"a .proto file was included in {archive.name}")
     if any(entry.endswith("uv.lock") for entry in entries):
         raise RuntimeError(f"uv.lock was included in {archive.name}")
 
