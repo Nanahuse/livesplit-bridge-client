@@ -4,7 +4,7 @@ from typing import Any, Self
 
 import zmq
 
-from .protocol import bridge_pb2, common_pb2
+from .protocol import bridge_pb2, common_pb2, run_pb2
 
 DEFAULT_RPC_ENDPOINT = "tcp://127.0.0.1:54000"
 PROTOCOL_VERSION = 1
@@ -136,6 +136,10 @@ class BridgeRpcClient:
     def snapshot(self) -> common_pb2.TimerSnapshot:
         response = self.request(bridge_pb2.Request(get_snapshot=bridge_pb2.GetSnapshotRequest()))
         return response.get_snapshot.snapshot
+
+    def get_run(self) -> run_pb2.RunSnapshot:
+        response = self.request(bridge_pb2.Request(get_run=bridge_pb2.GetRunRequest()))
+        return response.get_run.run
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType

@@ -1,4 +1,5 @@
 from livesplit.bridge.v1 import common_pb2 as _common_pb2
+from livesplit.bridge.v1 import run_pb2 as _run_pb2
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from collections.abc import Mapping as _Mapping
@@ -7,36 +8,40 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class Request(_message.Message):
-    __slots__ = ("protocol_version", "request_id", "attach", "get_snapshot", "timer_operation", "game_time_operation")
+    __slots__ = ("protocol_version", "request_id", "attach", "get_snapshot", "timer_operation", "game_time_operation", "get_run")
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     ATTACH_FIELD_NUMBER: _ClassVar[int]
     GET_SNAPSHOT_FIELD_NUMBER: _ClassVar[int]
     TIMER_OPERATION_FIELD_NUMBER: _ClassVar[int]
     GAME_TIME_OPERATION_FIELD_NUMBER: _ClassVar[int]
+    GET_RUN_FIELD_NUMBER: _ClassVar[int]
     protocol_version: int
     request_id: int
     attach: AttachRequest
     get_snapshot: GetSnapshotRequest
     timer_operation: TimerOperationRequest
     game_time_operation: GameTimeOperationRequest
-    def __init__(self, protocol_version: _Optional[int] = ..., request_id: _Optional[int] = ..., attach: _Optional[_Union[AttachRequest, _Mapping]] = ..., get_snapshot: _Optional[_Union[GetSnapshotRequest, _Mapping]] = ..., timer_operation: _Optional[_Union[TimerOperationRequest, _Mapping]] = ..., game_time_operation: _Optional[_Union[GameTimeOperationRequest, _Mapping]] = ...) -> None: ...
+    get_run: GetRunRequest
+    def __init__(self, protocol_version: _Optional[int] = ..., request_id: _Optional[int] = ..., attach: _Optional[_Union[AttachRequest, _Mapping]] = ..., get_snapshot: _Optional[_Union[GetSnapshotRequest, _Mapping]] = ..., timer_operation: _Optional[_Union[TimerOperationRequest, _Mapping]] = ..., game_time_operation: _Optional[_Union[GameTimeOperationRequest, _Mapping]] = ..., get_run: _Optional[_Union[GetRunRequest, _Mapping]] = ...) -> None: ...
 
 class Response(_message.Message):
-    __slots__ = ("protocol_version", "request_id", "error", "attach", "get_snapshot", "operation")
+    __slots__ = ("protocol_version", "request_id", "error", "attach", "get_snapshot", "operation", "get_run")
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     ATTACH_FIELD_NUMBER: _ClassVar[int]
     GET_SNAPSHOT_FIELD_NUMBER: _ClassVar[int]
     OPERATION_FIELD_NUMBER: _ClassVar[int]
+    GET_RUN_FIELD_NUMBER: _ClassVar[int]
     protocol_version: int
     request_id: int
     error: _common_pb2.BridgeError
     attach: AttachResponse
     get_snapshot: GetSnapshotResponse
     operation: _common_pb2.OperationResponse
-    def __init__(self, protocol_version: _Optional[int] = ..., request_id: _Optional[int] = ..., error: _Optional[_Union[_common_pb2.BridgeError, _Mapping]] = ..., attach: _Optional[_Union[AttachResponse, _Mapping]] = ..., get_snapshot: _Optional[_Union[GetSnapshotResponse, _Mapping]] = ..., operation: _Optional[_Union[_common_pb2.OperationResponse, _Mapping]] = ...) -> None: ...
+    get_run: GetRunResponse
+    def __init__(self, protocol_version: _Optional[int] = ..., request_id: _Optional[int] = ..., error: _Optional[_Union[_common_pb2.BridgeError, _Mapping]] = ..., attach: _Optional[_Union[AttachResponse, _Mapping]] = ..., get_snapshot: _Optional[_Union[GetSnapshotResponse, _Mapping]] = ..., operation: _Optional[_Union[_common_pb2.OperationResponse, _Mapping]] = ..., get_run: _Optional[_Union[GetRunResponse, _Mapping]] = ...) -> None: ...
 
 class AttachRequest(_message.Message):
     __slots__ = ()
@@ -59,6 +64,16 @@ class GetSnapshotResponse(_message.Message):
     SNAPSHOT_FIELD_NUMBER: _ClassVar[int]
     snapshot: _common_pb2.TimerSnapshot
     def __init__(self, snapshot: _Optional[_Union[_common_pb2.TimerSnapshot, _Mapping]] = ...) -> None: ...
+
+class GetRunRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class GetRunResponse(_message.Message):
+    __slots__ = ("run",)
+    RUN_FIELD_NUMBER: _ClassVar[int]
+    run: _run_pb2.RunSnapshot
+    def __init__(self, run: _Optional[_Union[_run_pb2.RunSnapshot, _Mapping]] = ...) -> None: ...
 
 class TimerOperationRequest(_message.Message):
     __slots__ = ("operation",)

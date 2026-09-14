@@ -29,6 +29,12 @@ with BridgeClient() as client:
     attached = client.attach()
     print(attached.session_id)
 
+    run = client.get_run()
+    print(run.game_name)
+    print(run.category_name)
+    for segment in run.segments:
+        print(segment.index, segment.name)
+
     client.start()
     client.split()
     client.set_game_time_ticks(123_450_000)  # 12.345 秒（100 ns tick）
@@ -43,9 +49,32 @@ with BridgeClient() as client:
 `BridgeClient` は RPC 操作とイベント購読を 1 つの接続として提供します。内部で
 1 つの ZeroMQ context を共有し、SUB の subscriber を先に生成してから RPC client を
 生成します。RPC 操作は `BridgeRpcClient` の公開操作をそのまま委譲します（`attach` /
-`snapshot` / `timer_operation` / `game_time_operation` と便利メソッド）。イベントは
-同期 iterator として受信でき、`receive(timeout_ms=...)` で単発受信もできます。受信
-時は必ず `BridgeEvent.type` を先に判定してください。
+`snapshot` / `get_run` / `timer_operation` / `game_time_operation` と便利メソッド）。
+イベントは同期 iterator として受信でき、`receive(timeout_ms=...)` で単発受信もでき
+ます。受信時は必ず `BridgeEvent.type` を先に判定してください。
+
+`get_run()` は Run 情報を取得し、`RunSnapshot` を返します。`snapshot()` が返す
+`TimerSnapshot.run_revision` と `RunSnapshot.run_revision` を比較することで、Run
+情報が更新されたかを判定できます。Run 情報のキャッシュや自動同期はクライアントでは
+行わないため、必要な場合は呼び出し側で再取得してください。
+
+```python
+from livesplit_bridge import BridgeClient
+
+with BridgeClient() as client:
+    client.attach()
+    run = client.get_run()
+
+    while True:
+        event = client.receive()
+        if event is None:
+            continue
+        if event.HasField("snapshot") and event.snapshot.run_revision != run.run_revision:
+            run = client.get_run()
+```
+
+heartbeat は snapshot を持たないため、`event.HasField("snapshot")` で Run 更新の
+有無を判定します。
 
 既定の RPC endpoint は `tcp://127.0.0.1:54000`、イベント endpoint は
 `tcp://127.0.0.1:54001` です。別の endpoint は
@@ -94,6 +123,10 @@ subscriber / RPC client をすべて閉じ、現在の subscriber / RPC client �
 や duplicate の除去、返却 snapshot と後続イベントとの順序は保証されません。イベント
 を欠落させず厳密に再同期したい場合は呼び出し側で sequence を照合してください。
 
+Run 情報をキャッシュしている場合、`reconnect()` は Run 情報を自動で再取得しません。
+再接続後に `snapshot()` の `run_revision` / `session_id` を確認し、必要に応じて
+`get_run()` を実行してキャッシュを更新してください。
+
 `BridgeClient`、`BridgeRpcClient`、`BridgeEventSubscriber` はいずれも single-thread
 専用です。同一インスタンスを複数スレッドから同時に使わないでください。
 
@@ -112,6 +145,7 @@ from livesplit_bridge import BridgeRpcClient
 
 with BridgeRpcClient() as rpc:
     rpc.attach()
+    run = rpc.get_run()
     rpc.start()
 ```
 
@@ -123,8 +157,8 @@ with BridgeEventSubscriber(receive_timeout_ms=5000, heartbeat_timeout_ms=3000) a
         ...
 ```
 
-低水準の操作では `bridge_pb2` と `common_pb2` を利用できます。enum 値と message
-定義はすべて upstream proto から生成され、クライアント側では複製していません。
+低水準の操作では `bridge_pb2`、`common_pb2`、`run_pb2` を利用できます。enum 値と
+message 定義はすべて upstream proto から生成され、クライアント側では複製していません。
 
 ## protocol の正本と生成物
 

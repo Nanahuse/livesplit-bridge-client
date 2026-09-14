@@ -15,6 +15,8 @@ REQUIRED_SUFFIXES = (
     "livesplit/bridge/v1/bridge_pb2.pyi",
     "livesplit/bridge/v1/common_pb2.py",
     "livesplit/bridge/v1/common_pb2.pyi",
+    "livesplit/bridge/v1/run_pb2.py",
+    "livesplit/bridge/v1/run_pb2.pyi",
     "livesplit_bridge/py.typed",
 )
 

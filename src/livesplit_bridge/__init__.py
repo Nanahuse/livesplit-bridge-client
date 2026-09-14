@@ -4,7 +4,7 @@ from .events import (
     BridgeConnectionLostError,
     BridgeEventSubscriber,
 )
-from .protocol import bridge_pb2, common_pb2
+from .protocol import bridge_pb2, common_pb2, run_pb2
 from .rpc import (
     DEFAULT_RPC_ENDPOINT,
     PROTOCOL_VERSION,
@@ -29,4 +29,5 @@ __all__ = [
     "BridgeRpcClient",
     "bridge_pb2",
     "common_pb2",
+    "run_pb2",
 ]
