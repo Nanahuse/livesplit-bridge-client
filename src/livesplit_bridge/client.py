@@ -6,7 +6,7 @@ from typing import Any, Self
 import zmq
 
 from .events import DEFAULT_EVENT_ENDPOINT, BridgeEventSubscriber
-from .protocol import bridge_pb2, common_pb2
+from .protocol import bridge_pb2, common_pb2, run_pb2
 from .rpc import DEFAULT_RPC_ENDPOINT, BridgeClientError, BridgeRpcClient
 
 
@@ -119,6 +119,9 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
 
     def snapshot(self) -> common_pb2.TimerSnapshot:
         return self.rpc.snapshot()
+
+    def get_run(self) -> run_pb2.RunSnapshot:
+        return self.rpc.get_run()
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType

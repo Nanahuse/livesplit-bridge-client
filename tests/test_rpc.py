@@ -13,6 +13,7 @@ from livesplit_bridge import (
     BridgeRpcClient,
     bridge_pb2,
     common_pb2,
+    run_pb2,
 )
 
 
@@ -94,6 +95,33 @@ def test_snapshot_sends_versioned_request_and_returns_snapshot() -> None:
     assert actual == expected
     assert socket.closed
     assert not context.terminated
+
+
+def test_get_run_sends_versioned_request_and_returns_run_snapshot() -> None:
+    expected = run_pb2.RunSnapshot(
+        session_id=42,
+        run_revision=3,
+        game_name="Super Mario World",
+        category_name="11 Exit",
+    )
+    socket = FakeSocket(
+        [
+            encoded_response(
+                1,
+                get_run=bridge_pb2.GetRunResponse(run=expected),
+            )
+        ]
+    )
+    context = FakeContext(socket)
+
+    with BridgeRpcClient(context=context) as client:
+        actual = client.get_run()
+
+    request = bridge_pb2.Request.FromString(socket.sent[0])
+    assert request.protocol_version == 1
+    assert request.request_id == 1
+    assert request.HasField("get_run")
+    assert actual == expected
 
 
 def test_convenience_timer_operation_uses_proto_enum() -> None:

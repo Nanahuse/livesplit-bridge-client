@@ -23,12 +23,15 @@ OUTPUT_ROOT = PROJECT_ROOT / "src"
 
 PROTO_FILES = (
     "livesplit/bridge/v1/common.proto",
+    "livesplit/bridge/v1/run.proto",
     "livesplit/bridge/v1/bridge.proto",
 )
 
 GENERATED_FILES = (
     "livesplit/bridge/v1/common_pb2.py",
     "livesplit/bridge/v1/common_pb2.pyi",
+    "livesplit/bridge/v1/run_pb2.py",
+    "livesplit/bridge/v1/run_pb2.pyi",
     "livesplit/bridge/v1/bridge_pb2.py",
     "livesplit/bridge/v1/bridge_pb2.pyi",
 )

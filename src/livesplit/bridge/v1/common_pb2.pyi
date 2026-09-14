@@ -87,7 +87,7 @@ EVENT_STATE_SNAPSHOT: BridgeEventType
 EVENT_HEARTBEAT: BridgeEventType
 
 class TimerSnapshot(_message.Message):
-    __slots__ = ("state_revision", "session_id", "event_sequence", "phase", "split_index", "split_count", "real_time_ticks", "game_time_ticks", "is_paused", "is_game_time_initialized")
+    __slots__ = ("state_revision", "session_id", "event_sequence", "phase", "split_index", "split_count", "real_time_ticks", "game_time_ticks", "is_paused", "is_game_time_initialized", "run_revision")
     STATE_REVISION_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     EVENT_SEQUENCE_FIELD_NUMBER: _ClassVar[int]
@@ -98,6 +98,7 @@ class TimerSnapshot(_message.Message):
     GAME_TIME_TICKS_FIELD_NUMBER: _ClassVar[int]
     IS_PAUSED_FIELD_NUMBER: _ClassVar[int]
     IS_GAME_TIME_INITIALIZED_FIELD_NUMBER: _ClassVar[int]
+    RUN_REVISION_FIELD_NUMBER: _ClassVar[int]
     state_revision: int
     session_id: int
     event_sequence: int
@@ -108,7 +109,8 @@ class TimerSnapshot(_message.Message):
     game_time_ticks: int
     is_paused: bool
     is_game_time_initialized: bool
-    def __init__(self, state_revision: _Optional[int] = ..., session_id: _Optional[int] = ..., event_sequence: _Optional[int] = ..., phase: _Optional[_Union[TimerPhase, str]] = ..., split_index: _Optional[int] = ..., split_count: _Optional[int] = ..., real_time_ticks: _Optional[int] = ..., game_time_ticks: _Optional[int] = ..., is_paused: bool = ..., is_game_time_initialized: bool = ...) -> None: ...
+    run_revision: int
+    def __init__(self, state_revision: _Optional[int] = ..., session_id: _Optional[int] = ..., event_sequence: _Optional[int] = ..., phase: _Optional[_Union[TimerPhase, str]] = ..., split_index: _Optional[int] = ..., split_count: _Optional[int] = ..., real_time_ticks: _Optional[int] = ..., game_time_ticks: _Optional[int] = ..., is_paused: bool = ..., is_game_time_initialized: bool = ..., run_revision: _Optional[int] = ...) -> None: ...
 
 class OperationResponse(_message.Message):
     __slots__ = ("success", "message", "snapshot")

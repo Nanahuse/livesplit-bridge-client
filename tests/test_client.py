@@ -12,6 +12,7 @@ from livesplit_bridge import (
     BridgeRemoteError,
     bridge_pb2,
     common_pb2,
+    run_pb2,
 )
 from livesplit_bridge import client as client_module
 from livesplit_bridge import events as events_module
@@ -55,6 +56,23 @@ def test_rpc_operations_delegate_to_client() -> None:
 
     request = bridge_pb2.Request.FromString(req_socket.sent[1])
     assert request.timer_operation.operation == common_pb2.TIMER_START
+    client.close()
+
+
+def test_get_run_delegates_to_rpc_client() -> None:
+    expected = run_pb2.RunSnapshot(session_id=42, run_revision=3, game_name="Super Mario World")
+    sub_socket = FakeSocket()
+    req_socket = FakeSocket(
+        [
+            encoded_response(1, get_run=bridge_pb2.GetRunResponse(run=expected)),
+        ]
+    )
+    client = BridgeClient(context=FakeContext(sub_socket, req_socket))
+
+    assert client.get_run() == expected
+
+    request = bridge_pb2.Request.FromString(req_socket.sent[0])
+    assert request.HasField("get_run")
     client.close()
 
 
