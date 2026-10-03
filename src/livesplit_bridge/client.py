@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, Self
-
-import zmq
+from typing import Self
 
 from .events import DEFAULT_EVENT_ENDPOINT, BridgeEventSubscriber
 from .protocol import bridge_pb2, common_pb2, run_pb2
@@ -13,10 +11,8 @@ from .rpc import DEFAULT_RPC_ENDPOINT, BridgeClientError, BridgeRpcClient
 class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     """Integrated synchronous client that combines RPC and event subscription.
 
-    Owns a single ZeroMQ context shared by a :class:`BridgeEventSubscriber` and a
-    :class:`BridgeRpcClient`. The subscriber is created first, then the RPC client. When
-    no ``context`` is supplied the client owns and terminates it; otherwise the caller
-    keeps ownership.
+    Owns a :class:`BridgeEventSubscriber` and a :class:`BridgeRpcClient`, each backed by
+    its own WebSocket connection. The subscriber is created first, then the RPC client.
 
     This class is single-threaded: it must only be used from a single thread at a time.
     """
@@ -28,14 +24,11 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         *,
         response_timeout_ms: int = 3000,
         heartbeat_timeout_ms: int | None = None,
-        context: Any | None = None,
     ) -> None:
         self._rpc_endpoint = rpc_endpoint
         self._event_endpoint = event_endpoint
         self._response_timeout_ms = response_timeout_ms
         self._heartbeat_timeout_ms = heartbeat_timeout_ms
-        self._context = context if context is not None else zmq.Context()
-        self._owns_context = context is None
         self._closed = False
         self._rpc: BridgeRpcClient | None = None
         self._events: BridgeEventSubscriber | None = None
@@ -43,12 +36,10 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             self._events = BridgeEventSubscriber(
                 event_endpoint,
                 heartbeat_timeout_ms=heartbeat_timeout_ms,
-                context=self._context,
             )
             self._rpc = BridgeRpcClient(
                 rpc_endpoint,
                 response_timeout_ms=response_timeout_ms,
-                context=self._context,
             )
         except Exception:
             events = self._events
@@ -59,12 +50,8 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
                 if events is not None:
                     events.close()
             finally:
-                try:
-                    if rpc is not None:
-                        rpc.close()
-                finally:
-                    if self._owns_context:
-                        self._context.term()
+                if rpc is not None:
+                    rpc.close()
             raise
 
     def _ensure_open(self) -> None:
@@ -97,12 +84,8 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             if events is not None:
                 events.close()
         finally:
-            try:
-                if rpc is not None:
-                    rpc.close()
-            finally:
-                if self._owns_context:
-                    self._context.term()
+            if rpc is not None:
+                rpc.close()
 
     def __enter__(self) -> Self:
         self._ensure_open()
@@ -176,7 +159,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         return next(self.events)
 
     def reconnect(self) -> common_pb2.TimerSnapshot:
-        """Recreate the subscriber and RPC client on the shared context.
+        """Recreate the subscriber and RPC client on fresh WebSocket connections.
 
         A new subscriber is created first, then a new RPC client. A fresh snapshot is
         retrieved through the new RPC client before the new resources replace the current
@@ -185,23 +168,21 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         client are closed (old events first, then old RPC); even if closing an old
         resource raises, the new resources remain current.
 
-        This operation is not atomic across the PUB/SUB and RPC channels: event gaps or
-        duplicates between the replaced subscriber and the RPC snapshot are not
-        prevented, and the returned snapshot and subsequent events are not ordered
-        relative to each other.
+        This operation is not atomic across the event and RPC connections: the event
+        WebSocket is connected before the snapshot is retrieved, so event gaps or
+        duplicates are not prevented, and the returned snapshot and subsequent events are
+        not ordered relative to each other.
         """
         self._ensure_open()
         new_events = BridgeEventSubscriber(
             self._event_endpoint,
             heartbeat_timeout_ms=self._heartbeat_timeout_ms,
-            context=self._context,
         )
         new_rpc: BridgeRpcClient | None = None
         try:
             new_rpc = BridgeRpcClient(
                 self._rpc_endpoint,
                 response_timeout_ms=self._response_timeout_ms,
-                context=self._context,
             )
             snapshot = new_rpc.snapshot()
         except Exception:

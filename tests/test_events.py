@@ -1,42 +1,53 @@
 from __future__ import annotations
 
 import pytest
-import zmq
+import websocket
 
 from livesplit_bridge import (
+    BridgeClientError,
     BridgeConnectionLostError,
     BridgeEventSubscriber,
+    BridgeProtocolError,
     common_pb2,
 )
 from livesplit_bridge import events as events_module
 
-from .test_rpc import FakeContext, FakeSocket
+from .test_rpc import FakeConnections, FakeWebSocket
 
 
-def test_receive_decodes_bridge_event_and_subscribes_to_all_topics() -> None:
+def install(
+    monkeypatch: pytest.MonkeyPatch, *results: FakeWebSocket | Exception
+) -> FakeConnections:
+    connections = FakeConnections(*results)
+    monkeypatch.setattr(events_module.websocket, "create_connection", connections)
+    return connections
+
+
+def test_receive_decodes_bridge_event(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = common_pb2.BridgeEvent(
         session_id=9,
         event_sequence=4,
         type=common_pb2.EVENT_TIMER_SPLIT,
     )
-    socket = FakeSocket([expected.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=50)
+    socket = FakeWebSocket([expected.SerializeToString()])
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=50)
 
     actual = subscriber.receive()
 
     assert actual == expected
-    assert (zmq.SUBSCRIBE, b"") in socket.options
+    assert socket.recv_timeout == 0.05
     subscriber.close()
 
 
-def test_receive_decodes_heartbeat_without_snapshot() -> None:
+def test_receive_decodes_heartbeat_without_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = common_pb2.BridgeEvent(
         session_id=9,
         event_sequence=4,
         type=common_pb2.EVENT_HEARTBEAT,
     )
-    socket = FakeSocket([expected.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=50)
+    install(monkeypatch, FakeWebSocket([expected.SerializeToString()]))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=50)
 
     actual = subscriber.receive()
 
@@ -47,20 +58,85 @@ def test_receive_decodes_heartbeat_without_snapshot() -> None:
     subscriber.close()
 
 
-def test_configured_receive_timeout_returns_none() -> None:
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=25)
+def test_iterator_yields_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = common_pb2.BridgeEvent(
+        session_id=9, event_sequence=1, type=common_pb2.EVENT_STATE_SNAPSHOT
+    )
+    second = common_pb2.BridgeEvent(
+        session_id=9, event_sequence=2, type=common_pb2.EVENT_TIMER_SPLIT
+    )
+    socket = FakeWebSocket([first.SerializeToString(), second.SerializeToString()])
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
+
+    assert iter(subscriber) is subscriber
+    assert next(subscriber) == first
+    assert next(subscriber) == second
+    subscriber.close()
+
+
+def test_configured_receive_timeout_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    socket = FakeWebSocket(timeout=True)
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
 
     assert subscriber.receive() is None
 
     subscriber.close()
 
 
-def test_receive_timeout_can_be_overridden() -> None:
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket))
+def test_receive_timeout_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    socket = FakeWebSocket(timeout=True)
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber()
 
     assert subscriber.receive(timeout_ms=3) is None
+    assert socket.recv_timeout == 0.003
+
+    subscriber.close()
+
+
+def test_text_frame_is_rejected_as_protocol_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, FakeWebSocket(["not binary"]))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
+
+    with pytest.raises(BridgeProtocolError, match="text frame"):
+        subscriber.receive()
+
+    subscriber.close()
+
+
+def test_malformed_protobuf_is_rejected_as_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(monkeypatch, FakeWebSocket([b"\x08"]))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
+
+    with pytest.raises(BridgeProtocolError, match="malformed"):
+        subscriber.receive()
+
+    subscriber.close()
+
+
+def test_websocket_close_is_connection_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(
+        monkeypatch,
+        FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")]),
+    )
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
+
+    with pytest.raises(BridgeConnectionLostError):
+        subscriber.receive()
+
+    subscriber.close()
+
+
+def test_connection_reset_is_connection_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, FakeWebSocket([ConnectionResetError("reset by peer")]))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
+
+    with pytest.raises(BridgeConnectionLostError):
+        subscriber.receive()
 
     subscriber.close()
 
@@ -85,12 +161,14 @@ def state_event(
     )
 
 
-def test_heartbeat_expiry_is_not_extended_by_state_events(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_heartbeat_expiry_is_not_extended_by_state_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
     first = state_event()
-    socket = FakeSocket([first.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, FakeWebSocket([first.SerializeToString()]))
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     assert subscriber.receive() == first
 
@@ -108,14 +186,15 @@ def test_heartbeat_extends_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None
         session_id=9, event_sequence=0, type=common_pb2.EVENT_HEARTBEAT
     )
     last = state_event(event_sequence=3)
-    socket = FakeSocket(
+    socket = FakeWebSocket(
         [
             heartbeat.SerializeToString(),
             heartbeat.SerializeToString(),
             last.SerializeToString(),
         ]
     )
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     subscriber.receive()
     clock.now = 0.08
@@ -132,8 +211,8 @@ def test_heartbeat_deadline_precedes_one_shot_timeout(
 ) -> None:
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=50)
+    install(monkeypatch, FakeWebSocket(timeout=True))
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=50)
 
     with pytest.raises(BridgeConnectionLostError, match="50 ms"):
         subscriber.receive(timeout_ms=100)
@@ -146,8 +225,8 @@ def test_one_shot_timeout_precedes_heartbeat_deadline(
 ) -> None:
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, FakeWebSocket(timeout=True))
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     assert subscriber.receive(timeout_ms=50) is None
 
@@ -165,15 +244,12 @@ def test_heartbeat_deadline_expiry_after_receive(
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
     event = state_event(type=event_type)
-
-    class DeadlineCrossingSocket(FakeSocket):
-        def poll(self, timeout: int, flags: int) -> bool:
-            assert flags == zmq.POLLIN
-            clock.now = 0.15
-            return True
-
-    socket = DeadlineCrossingSocket([event.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    socket = FakeWebSocket(
+        [event.SerializeToString()],
+        on_recv=lambda: setattr(clock, "now", 0.15),
+    )
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     with pytest.raises(BridgeConnectionLostError, match="100 ms"):
         subscriber.receive()
@@ -187,8 +263,8 @@ def test_heartbeat_deadline_starts_at_subscriber_creation(
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
     event = state_event()
-    socket = FakeSocket([event.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, FakeWebSocket([event.SerializeToString()]))
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     clock.now = 10.0
 
@@ -205,8 +281,9 @@ def test_same_subscriber_stays_expired_after_heartbeat_timeout(
     monkeypatch.setattr(events_module, "_monotonic", clock)
     first = state_event()
     heartbeat = common_pb2.BridgeEvent(type=common_pb2.EVENT_HEARTBEAT)
-    socket = FakeSocket([first.SerializeToString(), heartbeat.SerializeToString()])
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    socket = FakeWebSocket([first.SerializeToString(), heartbeat.SerializeToString()])
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     assert subscriber.receive() == first
 
@@ -226,8 +303,8 @@ def test_new_subscriber_resumes_heartbeat_monitoring_after_timeout(
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
     first = state_event()
-    socket = FakeSocket([first.SerializeToString()])
-    expired = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, FakeWebSocket([first.SerializeToString()]))
+    expired = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     assert expired.receive() == first
 
@@ -237,8 +314,8 @@ def test_new_subscriber_resumes_heartbeat_monitoring_after_timeout(
     expired.close()
 
     heartbeat = common_pb2.BridgeEvent(type=common_pb2.EVENT_HEARTBEAT)
-    socket = FakeSocket([heartbeat.SerializeToString()])
-    resumed = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, FakeWebSocket([heartbeat.SerializeToString()]))
+    resumed = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     clock.now = 0.18
     assert resumed.receive() == heartbeat
@@ -246,31 +323,13 @@ def test_new_subscriber_resumes_heartbeat_monitoring_after_timeout(
     resumed.close()
 
 
-def test_negative_heartbeat_timeout_is_rejected() -> None:
-    socket = FakeSocket()
-
-    with pytest.raises(ValueError, match="heartbeat_timeout_ms"):
-        BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=-1)
-
-    socket.close()
-
-
-def test_negative_receive_timeout_is_rejected() -> None:
-    socket = FakeSocket()
-
-    with pytest.raises(ValueError, match="receive_timeout_ms"):
-        BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=-1)
-
-    socket.close()
-
-
 def test_heartbeat_expiry_remains_a_connection_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = FakeMonotonic()
     monkeypatch.setattr(events_module, "_monotonic", clock)
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), heartbeat_timeout_ms=100)
+    install(monkeypatch, FakeWebSocket(timeout=True))
+    subscriber = BridgeEventSubscriber(heartbeat_timeout_ms=100)
 
     clock.now = 0.15
     with pytest.raises(BridgeConnectionLostError):
@@ -279,58 +338,48 @@ def test_heartbeat_expiry_remains_a_connection_error(
     subscriber.close()
 
 
-def test_receive_timeout_is_not_a_connection_error() -> None:
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(context=FakeContext(socket), receive_timeout_ms=25)
+def test_receive_timeout_is_not_a_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, FakeWebSocket(timeout=True))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
 
     assert subscriber.receive() is None
     subscriber.close()
 
 
-def test_heartbeat_none_preserves_receive_timeout_behavior() -> None:
-    socket = FakeSocket(poll_result=False)
-    subscriber = BridgeEventSubscriber(
-        context=FakeContext(socket), receive_timeout_ms=25, heartbeat_timeout_ms=None
-    )
+def test_heartbeat_none_preserves_receive_timeout_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(monkeypatch, FakeWebSocket(timeout=True))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25, heartbeat_timeout_ms=None)
 
     assert subscriber.receive() is None
 
     subscriber.close()
 
 
-class ConnectFailingSocket(FakeSocket):
-    def connect(self, endpoint: str) -> None:
-        raise RuntimeError("connect boom")
+def test_negative_heartbeat_timeout_is_rejected() -> None:
+    with pytest.raises(ValueError, match="heartbeat_timeout_ms"):
+        BridgeEventSubscriber(heartbeat_timeout_ms=-1)
 
 
-class SetSockoptFailingSocket(FakeSocket):
-    def setsockopt(self, option: int, value: object) -> None:
-        super().setsockopt(option, value)
-        raise RuntimeError("setsockopt boom")
+def test_negative_receive_timeout_is_rejected() -> None:
+    with pytest.raises(ValueError, match="receive_timeout_ms"):
+        BridgeEventSubscriber(receive_timeout_ms=-1)
 
 
-@pytest.mark.parametrize("bad_socket", [ConnectFailingSocket(), SetSockoptFailingSocket()])
-def test_sub_connect_failure_closes_socket_but_keeps_external_context(
-    bad_socket: FakeSocket,
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("connection refused"),
+        websocket.WebSocketException("handshake failed"),
+    ],
+)
+def test_connect_failure_is_wrapped_as_client_error(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    context = FakeContext(bad_socket)
+    install(monkeypatch, failure)
 
-    with pytest.raises(RuntimeError):
-        BridgeEventSubscriber(context=context)
-
-    assert bad_socket.closed
-    assert not context.terminated
-
-
-@pytest.mark.parametrize("bad_socket", [ConnectFailingSocket(), SetSockoptFailingSocket()])
-def test_sub_connect_failure_closes_socket_and_terms_owned_context(
-    bad_socket: FakeSocket, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    context = FakeContext(bad_socket)
-    monkeypatch.setattr(events_module.zmq, "Context", lambda: context)
-
-    with pytest.raises(RuntimeError):
+    with pytest.raises(BridgeClientError, match="event") as error:
         BridgeEventSubscriber()
 
-    assert bad_socket.closed
-    assert context.terminated
+    assert "ws://127.0.0.1:54000/bridge/v1/events" in str(error.value)

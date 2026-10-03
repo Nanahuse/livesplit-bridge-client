@@ -1,6 +1,6 @@
 [project]
 name = "livesplit-bridge-client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python client for LiveSplit.Bridge"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,7 +8,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Nanahuse" }]
 dependencies = [
     "protobuf>=6.31,<7",
-    "pyzmq>=26,<28",
+    "websocket-client>=1.8,<2",
 ]
 
 [project.urls]

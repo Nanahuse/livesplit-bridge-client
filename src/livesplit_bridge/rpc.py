@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Self
 
-import zmq
+import websocket
 
 from .protocol import bridge_pb2, common_pb2, run_pb2
 
-DEFAULT_RPC_ENDPOINT = "tcp://127.0.0.1:54000"
+DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v1/rpc"
 PROTOCOL_VERSION = 1
 
 
@@ -32,10 +32,10 @@ class BridgeRemoteError(BridgeClientError):
 
 
 class BridgeRpcClient:
-    """Synchronous ZeroMQ REQ/REP client for LiveSplit.Bridge.
+    """Synchronous WebSocket client for LiveSplit.Bridge RPC.
 
-    This class is single-threaded: a client owns one ZeroMQ socket and must only be used
-    from a single thread at a time.
+    This class is single-threaded: a client owns one WebSocket connection and must only
+    be used from a single thread at a time.
     """
 
     def __init__(
@@ -43,38 +43,43 @@ class BridgeRpcClient:
         rpc_endpoint: str = DEFAULT_RPC_ENDPOINT,
         *,
         response_timeout_ms: int = 3000,
-        context: Any | None = None,
     ) -> None:
         if response_timeout_ms < 0:
             raise ValueError("response_timeout_ms must be non-negative")
         self.rpc_endpoint = rpc_endpoint
         self.response_timeout_ms = response_timeout_ms
-        self._context = context if context is not None else zmq.Context()
-        self._owns_context = context is None
         self._socket: Any | None = None
         self._next_request_id = 1
         self._closed = False
-        try:
-            self._connect()
-        except Exception:
-            if self._owns_context:
-                self._context.term()
-            raise
+        self._connect()
+
+    def _timeout_seconds(self) -> float:
+        return self.response_timeout_ms / 1000
 
     def _connect(self) -> None:
-        socket = self._context.socket(zmq.REQ)
         try:
-            socket.setsockopt(zmq.LINGER, 0)
-            socket.connect(self.rpc_endpoint)
-        except Exception:
-            socket.close()
-            raise
+            socket = websocket.create_connection(
+                self.rpc_endpoint,
+                timeout=self._timeout_seconds(),
+            )
+        except (OSError, websocket.WebSocketException) as error:
+            raise BridgeClientError(
+                f"Failed to connect to RPC endpoint {self.rpc_endpoint}: {error}"
+            ) from error
         self._socket = socket
 
     def _reset_socket(self) -> None:
-        if self._socket is not None:
-            self._socket.close()
-        self._connect()
+        socket = self._socket
+        self._socket = None
+        if socket is not None:
+            try:
+                socket.close()
+            except Exception:
+                pass
+        try:
+            self._connect()
+        except BridgeClientError:
+            self._socket = None
 
     def close(self) -> None:
         if self._closed:
@@ -82,12 +87,8 @@ class BridgeRpcClient:
         self._closed = True
         socket = self._socket
         self._socket = None
-        try:
-            if socket is not None:
-                socket.close()
-        finally:
-            if self._owns_context:
-                self._context.term()
+        if socket is not None:
+            socket.close()
 
     def __enter__(self) -> Self:
         if self._closed:
@@ -108,14 +109,37 @@ class BridgeRpcClient:
         request.protocol_version = PROTOCOL_VERSION
         request.request_id = request_id
 
-        self._socket.send(request.SerializeToString())
-        if not self._socket.poll(self.response_timeout_ms, zmq.POLLIN):
+        socket = self._socket
+        socket.settimeout(self._timeout_seconds())
+        try:
+            socket.send_binary(request.SerializeToString())
+            payload = socket.recv()
+        except websocket.WebSocketTimeoutException as error:
             self._reset_socket()
             raise BridgeResponseTimeoutError(
                 f"No Bridge response within {self.response_timeout_ms} ms ({self.rpc_endpoint})"
+            ) from error
+        except (websocket.WebSocketConnectionClosedException, OSError) as error:
+            self._reset_socket()
+            raise BridgeClientError(
+                f"RPC connection closed by Bridge ({self.rpc_endpoint})"
+            ) from error
+        except websocket.WebSocketException as error:
+            self._reset_socket()
+            raise BridgeClientError(f"RPC failed: {error} ({self.rpc_endpoint})") from error
+
+        if isinstance(payload, str):
+            raise BridgeProtocolError(
+                f"Bridge returned a text frame; binary expected ({self.rpc_endpoint})"
             )
 
-        response = bridge_pb2.Response.FromString(self._socket.recv())
+        try:
+            response = bridge_pb2.Response.FromString(payload)
+        except Exception as error:
+            raise BridgeProtocolError(
+                f"Bridge returned a malformed response ({self.rpc_endpoint})"
+            ) from error
+
         if response.protocol_version != PROTOCOL_VERSION:
             raise BridgeProtocolError(
                 f"Protocol version mismatch: expected {PROTOCOL_VERSION}, "
