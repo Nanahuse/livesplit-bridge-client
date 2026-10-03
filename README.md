@@ -1,8 +1,8 @@
 # livesplit-bridge-client
 
 [`LiveSplit.Bridge`](https://github.com/Nanahuse/LiveSplit.Bridge) の Python
-クライアントです。状態取得とタイマー・ゲーム内時間の操作には ZeroMQ REQ/REP、
-イベント購読には PUB/SUB を使用します。
+クライアントです。状態取得とタイマー・ゲーム内時間の操作には RPC 用 WebSocket、
+イベント購読には Events 用 WebSocket を使用します。Payload は Binary Protobuf です。
 
 ## インストール
 
@@ -46,12 +46,12 @@ with BridgeClient() as client:
             print(common_pb2.BridgeEventType.Name(event.type), event.snapshot)
 ```
 
-`BridgeClient` は RPC 操作とイベント購読を 1 つの接続として提供します。内部で
-1 つの ZeroMQ context を共有し、SUB の subscriber を先に生成してから RPC client を
-生成します。RPC 操作は `BridgeRpcClient` の公開操作をそのまま委譲します（`attach` /
-`snapshot` / `get_run` / `timer_operation` / `game_time_operation` と便利メソッド）。
-イベントは同期 iterator として受信でき、`receive(timeout_ms=...)` で単発受信もでき
-ます。受信時は必ず `BridgeEvent.type` を先に判定してください。
+`BridgeClient` は RPC 操作とイベント購読を 1 つの統合 API として提供します。内部では
+Events 用 WebSocket を先に接続してから RPC 用 WebSocket を接続し、合計 2 本の
+WebSocket 接続を保持します。RPC 操作は `BridgeRpcClient` の公開操作をそのまま委譲
+します（`attach` / `snapshot` / `get_run` / `timer_operation` / `game_time_operation`
+と便利メソッド）。イベントは同期 iterator として受信でき、`receive(timeout_ms=...)`
+で単発受信もできます。受信時は必ず `BridgeEvent.type` を先に判定してください。
 
 `get_run()` は Run 情報を取得し、`RunSnapshot` を返します。`snapshot()` が返す
 `TimerSnapshot.run_revision` と `RunSnapshot.run_revision` を比較することで、Run
@@ -76,24 +76,27 @@ with BridgeClient() as client:
 heartbeat は snapshot を持たないため、`event.HasField("snapshot")` で Run 更新の
 有無を判定します。
 
-既定の RPC endpoint は `tcp://127.0.0.1:54000`、イベント endpoint は
-`tcp://127.0.0.1:54001` です。別の endpoint は
-`BridgeClient("tcp://127.0.0.1:55000", "tcp://127.0.0.1:55001")` のように指定
-できます。受信 timeout を指定しない場合、`receive()` はイベント到着まで待ちます。
+既定の RPC endpoint は `ws://127.0.0.1:54000/bridge/v1/rpc`、イベント endpoint は
+`ws://127.0.0.1:54000/bridge/v1/events` です。別の endpoint は
+`BridgeClient("ws://127.0.0.1:55000/bridge/v1/rpc", "ws://127.0.0.1:55000/bridge/v1/events")`
+のように指定できます。受信 timeout を指定しない場合、`receive()` はイベント到着まで
+待ちます。
 イベントの単発受信 timeout は `receive(timeout_ms=...)` の呼び出し単位で指定します。
 指定時間内にイベントがなければ、正常な待機結果として `None` を返します。
 Bridgeからの個々の応答期限は `response_timeout_ms` で指定し、期限内に応答がない
 場合は `BridgeResponseTimeoutError` が発生します。
 
-`heartbeat_timeout_ms` を指定すると、subscriber の生成時（SUB 接続完了時）から
-ハートビートが受信できなくなるまでの監視期限が始まります。期限は
+`heartbeat_timeout_ms` を指定すると、subscriber の生成時（Events WebSocket 接続完了時）
+からハートビートが受信できなくなるまでの監視期限が始まります。期限は
 `EVENT_HEARTBEAT` 受信時のみ延長され、状態イベントでは延長されません。期限切れ
 は `BridgeConnectionLostError`（`BridgeClientError` の subclass）として発生し、
-heartbeat 欠落により Bridge との接続全体が喪失したことを示します。単発受信
-timeout は接続障害ではないため例外にはならず、`receive()` が `None` を返します。
-期限切れ後は同じ subscriber が引き続き `BridgeConnectionLostError` を送出し、
-監視は再開されません。通常のイベント処理を止め、`reconnect()` で subscriber と
-RPC client を再接続し、snapshot で状態を再同期してください。
+heartbeat 欠落により Bridge との接続全体が喪失したことを示します。Events WebSocket
+が Bridge 側から close された場合も同様に `BridgeConnectionLostError` として検出
+します。単発受信 timeout は接続障害ではないため例外にはならず、`receive()` が
+`None` を返します。期限切れ後は同じ subscriber が引き続き
+`BridgeConnectionLostError` を送出し、監視は再開されません。通常のイベント処理を
+止め、`reconnect()` で subscriber と RPC client を再接続し、snapshot で状態を再同期
+してください。
 
 ```python
 from livesplit_bridge import BridgeClient, BridgeConnectionLostError
@@ -112,16 +115,17 @@ with BridgeClient(heartbeat_timeout_ms=3000) as client:
         # event を処理する
 ```
 
-`reconnect()` は共有する context 上で新しい subscriber を先に、新しい RPC client を
-次に生成し、新しい RPC で `snapshot()` を取得してから現在の subscriber / RPC client
-を置き換え、`TimerSnapshot` を返します。snapshot 取得に失敗した場合は新しく生成した
-subscriber / RPC client をすべて閉じ、現在の subscriber / RPC client を維持するため、
-そのまま再試行できます。
+`reconnect()` は新しい Events WebSocket を先に、新しい RPC WebSocket を次に接続し、
+新しい RPC で `snapshot()` を取得してから現在の subscriber / RPC client を置き換え、
+`TimerSnapshot` を返します。snapshot 取得に失敗した場合は新しく生成した Events / RPC
+WebSocket をすべて閉じ、現在の接続を維持するため、そのまま再試行できます。成功時は
+旧 Events WebSocket を先に、旧 RPC WebSocket を次に閉じます。
 
-`reconnect()` は PUB/SUB と RPC の間で原子的ではありません。新しい subscriber を
-接続してから snapshot を取得し、その後に現在の resource と置き換えますが、event gap
-や duplicate の除去、返却 snapshot と後続イベントとの順序は保証されません。イベント
-を欠落させず厳密に再同期したい場合は呼び出し側で sequence を照合してください。
+`reconnect()` は Events と RPC の 2 接続の間で原子的ではありません。Events
+WebSocket を接続してから RPC snapshot を取得するため、その間に event が到着する
+可能性があります。event gap / duplicate の自動除去は行わず、返却 snapshot と後続
+イベントとの順序も保証されません。イベントを欠落させず厳密に再同期したい場合は
+呼び出し側で `session_id` / `event_sequence` を照合してください。
 
 Run 情報をキャッシュしている場合、`reconnect()` は Run 情報を自動で再取得しません。
 再接続後に `snapshot()` の `run_revision` / `session_id` を確認し、必要に応じて
