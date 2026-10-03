@@ -131,6 +131,16 @@ def test_websocket_close_is_connection_lost(monkeypatch: pytest.MonkeyPatch) -> 
     subscriber.close()
 
 
+def test_connection_reset_is_connection_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, FakeWebSocket([ConnectionResetError("reset by peer")]))
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
+
+    with pytest.raises(BridgeConnectionLostError):
+        subscriber.receive()
+
+    subscriber.close()
+
+
 class FakeMonotonic:
     def __init__(self, start: float = 0.0) -> None:
         self.now = start

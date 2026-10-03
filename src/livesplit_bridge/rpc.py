@@ -119,7 +119,7 @@ class BridgeRpcClient:
             raise BridgeResponseTimeoutError(
                 f"No Bridge response within {self.response_timeout_ms} ms ({self.rpc_endpoint})"
             ) from error
-        except websocket.WebSocketConnectionClosedException as error:
+        except (websocket.WebSocketConnectionClosedException, OSError) as error:
             self._reset_socket()
             raise BridgeClientError(
                 f"RPC connection closed by Bridge ({self.rpc_endpoint})"

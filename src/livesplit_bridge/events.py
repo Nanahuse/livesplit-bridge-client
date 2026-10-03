@@ -94,7 +94,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             payload = socket.recv()
         except websocket.WebSocketTimeoutException:
             return None
-        except websocket.WebSocketConnectionClosedException:
+        except (websocket.WebSocketConnectionClosedException, OSError):
             self._connection_lost(f"Event connection closed by Bridge ({self.event_endpoint})")
         except websocket.WebSocketException as error:
             self._connection_lost(f"Event connection failed: {error} ({self.event_endpoint})")
@@ -121,7 +121,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             if heartbeat_side:
                 self._raise_heartbeat_timeout(heartbeat_timeout_ms)
             return None
-        except websocket.WebSocketConnectionClosedException:
+        except (websocket.WebSocketConnectionClosedException, OSError):
             self._connection_lost(f"Event connection closed by Bridge ({self.event_endpoint})")
         except websocket.WebSocketException as error:
             self._connection_lost(f"Event connection failed: {error} ({self.event_endpoint})")

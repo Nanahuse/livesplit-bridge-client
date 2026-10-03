@@ -275,6 +275,20 @@ def test_timeout_recreates_connection_and_next_request_uses_it(
     assert replacement.closed
 
 
+def test_connection_reset_during_request_is_client_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset = FakeWebSocket([ConnectionResetError("reset by peer")])
+    install(monkeypatch, reset, FakeWebSocket())
+    client = BridgeRpcClient()
+
+    with pytest.raises(BridgeClientError, match="closed"):
+        client.attach()
+
+    assert reset.closed
+    client.close()
+
+
 class TimeoutThenDelayedWebSocket(FakeWebSocket):
     def __init__(self, delayed: bytes) -> None:
         super().__init__()
