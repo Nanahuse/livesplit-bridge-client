@@ -10,7 +10,7 @@ import websocket
 from .protocol import common_pb2
 from .rpc import BridgeClientError, BridgeProtocolError
 
-DEFAULT_EVENT_ENDPOINT = "ws://127.0.0.1:54000/bridge/v1/events"
+DEFAULT_EVENT_ENDPOINT = "ws://127.0.0.1:54000/bridge/v2/events"
 
 _monotonic = time.monotonic
 

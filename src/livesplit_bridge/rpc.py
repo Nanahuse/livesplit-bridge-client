@@ -6,8 +6,8 @@ import websocket
 
 from .protocol import bridge_pb2, common_pb2, run_pb2
 
-DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v1/rpc"
-PROTOCOL_VERSION = 1
+DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v2/rpc"
+PROTOCOL_VERSION = 2
 
 
 class BridgeClientError(RuntimeError):
@@ -157,13 +157,25 @@ class BridgeRpcClient:
         response = self.request(bridge_pb2.Request(attach=bridge_pb2.AttachRequest()))
         return response.attach
 
-    def snapshot(self) -> common_pb2.TimerSnapshot:
-        response = self.request(bridge_pb2.Request(get_snapshot=bridge_pb2.GetSnapshotRequest()))
-        return response.get_snapshot.snapshot
+    def get_timer_state(self) -> common_pb2.TimerState:
+        response = self.request(
+            bridge_pb2.Request(get_timer_state=bridge_pb2.GetTimerStateRequest())
+        )
+        return response.get_timer_state.timer_state
 
-    def get_run(self) -> run_pb2.RunSnapshot:
+    def get_run(self) -> run_pb2.RunState:
         response = self.request(bridge_pb2.Request(get_run=bridge_pb2.GetRunRequest()))
         return response.get_run.run
+
+    def get_attempt(self) -> common_pb2.AttemptState:
+        response = self.request(bridge_pb2.Request(get_attempt=bridge_pb2.GetAttemptRequest()))
+        return response.get_attempt.attempt
+
+    def get_runtime_state(self) -> common_pb2.RuntimeState:
+        response = self.request(
+            bridge_pb2.Request(get_runtime_state=bridge_pb2.GetRuntimeStateRequest())
+        )
+        return response.get_runtime_state.runtime_state
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType

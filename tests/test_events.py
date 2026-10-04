@@ -4,6 +4,7 @@ import pytest
 import websocket
 
 from livesplit_bridge import (
+    DEFAULT_EVENT_ENDPOINT,
     BridgeClientError,
     BridgeConnectionLostError,
     BridgeEventSubscriber,
@@ -23,11 +24,25 @@ def install(
     return connections
 
 
-def test_receive_decodes_bridge_event(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_endpoint_is_v2() -> None:
+    assert DEFAULT_EVENT_ENDPOINT == "ws://127.0.0.1:54000/bridge/v2/events"
+
+
+def test_receive_decodes_bridge_event_with_timer_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timer_state = common_pb2.TimerState(
+        session_id=9,
+        state_revision=4,
+        phase=common_pb2.RUNNING,
+        split_index=2,
+        run_revision=1,
+    )
     expected = common_pb2.BridgeEvent(
         session_id=9,
         event_sequence=4,
         type=common_pb2.EVENT_TIMER_SPLIT,
+        timer_state=timer_state,
     )
     socket = FakeWebSocket([expected.SerializeToString()])
     install(monkeypatch, socket)
@@ -36,11 +51,16 @@ def test_receive_decodes_bridge_event(monkeypatch: pytest.MonkeyPatch) -> None:
     actual = subscriber.receive()
 
     assert actual == expected
+    assert actual is not None
+    assert actual.HasField("timer_state")
+    assert actual.timer_state == timer_state
     assert socket.recv_timeout == 0.05
     subscriber.close()
 
 
-def test_receive_decodes_heartbeat_without_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_receive_decodes_heartbeat_without_timer_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     expected = common_pb2.BridgeEvent(
         session_id=9,
         event_sequence=4,
@@ -54,13 +74,13 @@ def test_receive_decodes_heartbeat_without_snapshot(monkeypatch: pytest.MonkeyPa
     assert actual is not None
     assert actual.type == common_pb2.EVENT_HEARTBEAT
     assert actual.event_sequence == expected.event_sequence
-    assert not actual.HasField("snapshot")
+    assert not actual.HasField("timer_state")
     subscriber.close()
 
 
 def test_iterator_yields_events(monkeypatch: pytest.MonkeyPatch) -> None:
     first = common_pb2.BridgeEvent(
-        session_id=9, event_sequence=1, type=common_pb2.EVENT_STATE_SNAPSHOT
+        session_id=9, event_sequence=1, type=common_pb2.EVENT_TIMER_STARTED
     )
     second = common_pb2.BridgeEvent(
         session_id=9, event_sequence=2, type=common_pb2.EVENT_TIMER_SPLIT
@@ -152,12 +172,17 @@ class FakeMonotonic:
 def state_event(
     session_id: int = 9,
     event_sequence: int = 1,
-    type: common_pb2.BridgeEventType = common_pb2.EVENT_STATE_SNAPSHOT,
+    type: common_pb2.BridgeEventType = common_pb2.EVENT_TIMER_SPLIT,
 ) -> common_pb2.BridgeEvent:
     return common_pb2.BridgeEvent(
         session_id=session_id,
         event_sequence=event_sequence,
         type=type,
+        timer_state=common_pb2.TimerState(
+            session_id=session_id,
+            state_revision=event_sequence,
+            phase=common_pb2.RUNNING,
+        ),
     )
 
 
@@ -235,7 +260,7 @@ def test_one_shot_timeout_precedes_heartbeat_deadline(
 
 @pytest.mark.parametrize(
     "event_type",
-    [common_pb2.EVENT_STATE_SNAPSHOT, common_pb2.EVENT_HEARTBEAT],
+    [common_pb2.EVENT_TIMER_SPLIT, common_pb2.EVENT_HEARTBEAT],
 )
 def test_heartbeat_deadline_expiry_after_receive(
     monkeypatch: pytest.MonkeyPatch,
@@ -382,4 +407,4 @@ def test_connect_failure_is_wrapped_as_client_error(
     with pytest.raises(BridgeClientError, match="event") as error:
         BridgeEventSubscriber()
 
-    assert "ws://127.0.0.1:54000/bridge/v1/events" in str(error.value)
+    assert DEFAULT_EVENT_ENDPOINT in str(error.value)

@@ -100,11 +100,17 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def attach(self) -> bridge_pb2.AttachResponse:
         return self.rpc.attach()
 
-    def snapshot(self) -> common_pb2.TimerSnapshot:
-        return self.rpc.snapshot()
+    def get_timer_state(self) -> common_pb2.TimerState:
+        return self.rpc.get_timer_state()
 
-    def get_run(self) -> run_pb2.RunSnapshot:
+    def get_run(self) -> run_pb2.RunState:
         return self.rpc.get_run()
+
+    def get_attempt(self) -> common_pb2.AttemptState:
+        return self.rpc.get_attempt()
+
+    def get_runtime_state(self) -> common_pb2.RuntimeState:
+        return self.rpc.get_runtime_state()
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType
@@ -158,20 +164,21 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def __next__(self) -> common_pb2.BridgeEvent:
         return next(self.events)
 
-    def reconnect(self) -> common_pb2.TimerSnapshot:
+    def reconnect(self) -> bridge_pb2.AttachResponse:
         """Recreate the subscriber and RPC client on fresh WebSocket connections.
 
-        A new subscriber is created first, then a new RPC client. A fresh snapshot is
-        retrieved through the new RPC client before the new resources replace the current
-        ones. On any failure the new resources are closed and the old resources are kept,
-        so the caller can retry. After a successful switch the old subscriber and RPC
-        client are closed (old events first, then old RPC); even if closing an old
-        resource raises, the new resources remain current.
+        A new subscriber is created first, then a new RPC client. The new RPC client
+        calls ``attach()`` before the new resources replace the current ones. On any
+        failure the new resources are closed and the old resources are kept, so the
+        caller can retry. After a successful switch the old subscriber and RPC client are
+        closed (old events first, then old RPC); even if closing an old resource raises,
+        the new resources remain current.
 
         This operation is not atomic across the event and RPC connections: the event
-        WebSocket is connected before the snapshot is retrieved, so event gaps or
-        duplicates are not prevented, and the returned snapshot and subsequent events are
-        not ordered relative to each other.
+        WebSocket is connected before ``attach()`` completes, so event gaps or duplicates
+        are not prevented, and the returned ``AttachResponse`` and subsequent events are
+        not ordered relative to each other. Use ``session_id`` and ``event_sequence`` to
+        reconcile on the caller side if required.
         """
         self._ensure_open()
         new_events = BridgeEventSubscriber(
@@ -184,7 +191,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
                 self._rpc_endpoint,
                 response_timeout_ms=self._response_timeout_ms,
             )
-            snapshot = new_rpc.snapshot()
+            attached = new_rpc.attach()
         except Exception:
             try:
                 if new_rpc is not None:
@@ -203,4 +210,4 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         finally:
             if old_rpc is not None:
                 old_rpc.close()
-        return snapshot
+        return attached
