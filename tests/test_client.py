@@ -156,6 +156,51 @@ def test_receive_and_iteration_use_v3_events(monkeypatch: pytest.MonkeyPatch) ->
     client.close()
 
 
+def test_receive_rejects_timer_event_without_timer_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = common_pb2.BridgeEvent(
+        session_id=9,
+        event_sequence=1,
+        type=common_pb2.EVENT_TIMER_SPLIT,
+    )
+    valid_event = common_pb2.BridgeEvent(
+        session_id=9,
+        event_sequence=1,
+        type=common_pb2.EVENT_TIMER_SPLIT,
+        timer_state=common_pb2.TimerState(phase=common_pb2.RUNNING),
+    )
+    install(
+        monkeypatch,
+        FakeWebSocket([event.SerializeToString(), valid_event.SerializeToString()]),
+        FakeWebSocket(),
+    )
+    client = BridgeClient()
+
+    with pytest.raises(BridgeProtocolError, match="missing its required timer_state"):
+        client.receive()
+
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
+    assert client.receive() == valid_event
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "event_type", [common_pb2.EVENT_RUN_CHANGED, common_pb2.EVENT_CONTEXT_CHANGED]
+)
+def test_receive_accepts_non_timer_events_without_timer_state(
+    monkeypatch: pytest.MonkeyPatch,
+    event_type: common_pb2.BridgeEventType,
+) -> None:
+    event = common_pb2.BridgeEvent(session_id=9, event_sequence=1, type=event_type)
+    install(monkeypatch, FakeWebSocket([event.SerializeToString()]), FakeWebSocket())
+    client = BridgeClient()
+
+    assert client.receive() == event
+    assert not event.HasField("timer_state")
+    client.close()
+
+
 def test_reconnect_synchronizes_before_replacing_both_connections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

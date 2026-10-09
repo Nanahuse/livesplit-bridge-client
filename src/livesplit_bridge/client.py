@@ -14,6 +14,7 @@ from .protocol import bridge_pb2, common_pb2, run_pb2
 from .rpc import (
     DEFAULT_RPC_ENDPOINT,
     BridgeClientError,
+    BridgeProtocolError,
     BridgeReconnectRequiredError,
     BridgeResyncRequiredError,
     BridgeRpcClient,
@@ -347,6 +348,18 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         }
         if event.type not in known_types:
             self._raise_resync(f"Unknown Bridge event type: {event.type}")
+        timer_event_types = {
+            common_pb2.EVENT_TIMER_STARTED,
+            common_pb2.EVENT_TIMER_SPLIT,
+            common_pb2.EVENT_TIMER_SKIPPED,
+            common_pb2.EVENT_TIMER_UNDO,
+            common_pb2.EVENT_TIMER_RESET,
+            common_pb2.EVENT_TIMER_PHASE_CHANGED,
+        }
+        if event.type in timer_event_types and not event.HasField("timer_state"):
+            raise BridgeProtocolError(
+                f"Timer event {event.type} is missing its required timer_state"
+            )
         if event.session_id == 0:
             self._raise_reconnect("Bridge event has an invalid zero session ID")
         if self._known_rpc_session_id and event.session_id != self._known_rpc_session_id:
