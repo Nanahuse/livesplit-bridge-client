@@ -331,11 +331,33 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         self._ensure_healthy()
         try:
             event = self.events.receive(timeout_ms=timeout_ms)
+        except BridgeProtocolError:
+            if self._recovery_state is not BridgeRecoveryState.RECONNECT_REQUIRED:
+                self._recovery_state = BridgeRecoveryState.RESYNC_REQUIRED
+            raise
         except BridgeConnectionLostError:
             self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
             raise
         if event is None:
             return None
+        if event.session_id == 0:
+            self._raise_reconnect("Bridge event has an invalid zero session ID")
+        if self._known_rpc_session_id and event.session_id != self._known_rpc_session_id:
+            self._raise_reconnect(
+                f"Event session {event.session_id} does not match RPC session "
+                f"{self._known_rpc_session_id}"
+            )
+        if self._event_session_id is not None and event.session_id != self._event_session_id:
+            self._raise_reconnect(
+                f"Event session changed from {self._event_session_id} to {event.session_id}"
+            )
+        if self._last_event_sequence is not None:
+            expected = self._last_event_sequence + 1
+            if event.event_sequence != expected:
+                self._raise_resync(
+                    f"Event sequence gap: expected {expected}, got {event.event_sequence}"
+                )
+
         known_types = {
             common_pb2.EVENT_TIMER_STARTED,
             common_pb2.EVENT_TIMER_SPLIT,
@@ -357,27 +379,13 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             common_pb2.EVENT_TIMER_PHASE_CHANGED,
         }
         if event.type in timer_event_types and not event.HasField("timer_state"):
+            if self._recovery_state is not BridgeRecoveryState.RECONNECT_REQUIRED:
+                self._recovery_state = BridgeRecoveryState.RESYNC_REQUIRED
             raise BridgeProtocolError(
                 f"Timer event {event.type} is missing its required timer_state"
             )
-        if event.session_id == 0:
-            self._raise_reconnect("Bridge event has an invalid zero session ID")
-        if self._known_rpc_session_id and event.session_id != self._known_rpc_session_id:
-            self._raise_reconnect(
-                f"Event session {event.session_id} does not match RPC session "
-                f"{self._known_rpc_session_id}"
-            )
-        if self._event_session_id is not None and event.session_id != self._event_session_id:
-            self._raise_reconnect(
-                f"Event session changed from {self._event_session_id} to {event.session_id}"
-            )
+
         self._event_session_id = event.session_id
-        if self._last_event_sequence is not None:
-            expected = self._last_event_sequence + 1
-            if event.event_sequence != expected:
-                self._raise_resync(
-                    f"Event sequence gap: expected {expected}, got {event.event_sequence}"
-                )
         self._last_event_sequence = event.event_sequence
         return event
 
