@@ -387,6 +387,58 @@ def test_remote_error_during_sync_preserves_existing_recovery_state(
     client.close()
 
 
+@pytest.mark.parametrize("start_resync_required", [False, True])
+def test_transport_reset_during_synchronize_requires_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    start_resync_required: bool,
+) -> None:
+    events = [
+        common_pb2.BridgeEvent(
+            session_id=42,
+            event_sequence=sequence,
+            type=common_pb2.EVENT_RUN_CHANGED,
+        )
+        for sequence in (57, 60)
+    ]
+    event_socket = FakeWebSocket([event.SerializeToString() for event in events])
+    rpc_socket = FakeWebSocket(
+        [
+            encoded_response(
+                1,
+                session_id=42,
+                get_timer_state=bridge_pb2.GetTimerStateResponse(),
+            )
+        ],
+        timeout=True,
+    )
+    replacement = FakeWebSocket()
+    install(monkeypatch, event_socket, rpc_socket, replacement)
+    client = BridgeClient()
+
+    if start_resync_required:
+        assert client.receive() == events[0]
+        with pytest.raises(BridgeResyncRequiredError, match="sequence gap"):
+            client.receive()
+        assert client.recovery_state is BridgeRecoveryState.RESYNC_REQUIRED
+
+    with pytest.raises(BridgeResponseTimeoutError):
+        client.synchronize()
+
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
+    assert len(rpc_socket.sent) == 2
+    assert replacement.sent == []
+    for operation in (
+        client.get_timer_state,
+        client.split,
+        lambda: client.receive(timeout_ms=0),
+        client.synchronize,
+    ):
+        with pytest.raises(BridgeReconnectRequiredError):
+            operation()
+    assert replacement.sent == []
+    client.close()
+
+
 def test_sync_session_different_from_known_rpc_session_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

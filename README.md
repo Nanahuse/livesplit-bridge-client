@@ -145,13 +145,15 @@ except BridgeConnectionLostError:
 
 `BridgeConnectionLostError`が発生した後は`reconnect()`を使ってください。新しい接続では最初の
 Event受信時にEvents sessionを確定します。Control request（Game Time操作を含む）は自動再送
-されません。RPC timeout後に実行結果が不明な場合は、必要なQueryまたは`synchronize()`で状態を
-確認してください。
+されません。RPC transport障害が発生すると`RECONNECT_REQUIRED`になり、Query / Control / Events受信 /
+`synchronize()`を停止します。RPCとEventsの両接続を再確立するため、`reconnect()`を呼び出してください。
 
 ## 低水準API
 
 RPCだけを使う場合は`BridgeRpcClient`、Event購読だけの場合は`BridgeEventSubscriber`を
 利用できます。`BridgeClient`と同じ接続先・timeoutの指定方法です。
+`BridgeRpcClient`単体ではtransport障害時にRPC socketを再確立しますが、失敗したrequestは自動再送
+されません。RPCとEventsのsession continuityを一緒に管理する場合は統合`BridgeClient`を使用してください。
 
 ```python
 from livesplit_bridge import BridgeRpcClient
