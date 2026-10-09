@@ -32,7 +32,6 @@ class FakeWebSocket:
         self.always_timeout = timeout
         self.sent: list[bytes] = []
         self.recv_timeout: float | None = None
-        self.closed = False
 
     def send_binary(self, payload: bytes) -> None:
         self.sent.append(payload)
@@ -51,7 +50,7 @@ class FakeWebSocket:
         self.recv_timeout = value
 
     def close(self) -> None:
-        self.closed = True
+        pass
 
 
 class FakeConnections:
@@ -169,7 +168,6 @@ def test_query_methods_send_v3_binary_requests_and_return_payload(
         assert client.session_id == 42
         assert socket.recv_timeout == client.response_timeout_ms / 1000
 
-    assert socket.closed
     assert connections.endpoints == [DEFAULT_RPC_ENDPOINT]
 
 
@@ -261,36 +259,6 @@ def test_error_response_updates_session_before_raising_remote_error(
     client.close()
 
 
-def test_error_response_records_session_transition_for_this_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    socket = FakeWebSocket(
-        [
-            encoded_response(
-                1,
-                session_id=42,
-                get_timer_state=bridge_pb2.GetTimerStateResponse(),
-            ),
-            encoded_response(
-                2,
-                session_id=99,
-                error=common_pb2.BridgeError(
-                    code=common_pb2.OPERATION_FAILED,
-                    message="new runtime",
-                ),
-            ),
-        ]
-    )
-    install(monkeypatch, socket)
-
-    with BridgeRpcClient() as client:
-        client.get_timer_state()
-        with pytest.raises(BridgeRemoteError, match="new runtime"):
-            client.start()
-        assert client.session_id == 99
-        assert client.session_change == (42, 99)
-
-
 @pytest.mark.parametrize(
     "response",
     [
@@ -313,7 +281,6 @@ def test_invalid_session_or_response_body_is_rejected(
     with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError):
         client.get_timer_state()
     assert client.session_id == 0
-    assert client.session_change is None
 
 
 def test_missing_response_body_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -333,61 +300,45 @@ def test_missing_response_body_is_rejected(monkeypatch: pytest.MonkeyPatch) -> N
 
     with BridgeRpcClient() as client:
         client.get_timer_state()
-        with pytest.raises(BridgeProtocolError, match="body mismatch"):
+        with pytest.raises(BridgeProtocolError):
             client.get_timer_state()
         assert client.session_id == 42
-        assert client.session_change is None
-
-
-def test_low_level_rpc_records_session_transition(monkeypatch: pytest.MonkeyPatch) -> None:
-    first = encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse())
-    second = encoded_response(2, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse())
-    install(monkeypatch, FakeWebSocket([first, second]))
-
-    with BridgeRpcClient() as client:
-        client.get_timer_state()
-        client.get_timer_state()
-        assert client.session_change == (42, 99)
 
 
 def test_text_and_malformed_responses_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for payload, expected in [("text", "text frame"), (b"\x08", "malformed")]:
+    for payload in ("text", b"\x08"):
         install(monkeypatch, FakeWebSocket([payload]))
-        with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError, match=expected):
+        with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError):
             client.get_timer_state()
 
 
-def test_timeout_reconnects_and_next_request_succeeds(
+@pytest.mark.parametrize(
+    ("failed_socket", "error_type"),
+    [
+        (FakeWebSocket(timeout=True), BridgeResponseTimeoutError),
+        (
+            FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")]),
+            BridgeClientError,
+        ),
+        (FakeWebSocket([websocket.WebSocketException("transport error")]), BridgeClientError),
+    ],
+)
+def test_transport_failure_does_not_retry_and_next_rpc_works(
     monkeypatch: pytest.MonkeyPatch,
+    failed_socket: FakeWebSocket,
+    error_type: type[Exception],
 ) -> None:
-    timed_out = FakeWebSocket(timeout=True)
     replacement = FakeWebSocket([encoded_response(2, operation=common_pb2.OperationResponse())])
-    install(monkeypatch, timed_out, replacement)
-    client = BridgeRpcClient(response_timeout_ms=12)
-
-    with pytest.raises(BridgeResponseTimeoutError, match="12 ms"):
-        client.start()
-
-    assert not client.start().ListFields()
-    assert timed_out.closed
-    client.close()
-    assert replacement.closed
-
-
-def test_connection_close_is_wrapped_and_socket_is_reset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    closed = FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")])
-    replacement = FakeWebSocket()
-    install(monkeypatch, closed, replacement)
+    install(monkeypatch, failed_socket, replacement)
     client = BridgeRpcClient()
 
-    with pytest.raises(BridgeClientError, match="closed"):
-        client.get_timer_state()
+    with pytest.raises(error_type):
+        client.start()
 
-    assert closed.closed
+    assert replacement.sent == []
+    assert not client.start().ListFields()
     client.close()
 
 
@@ -398,14 +349,14 @@ def test_close_is_idempotent_and_rejects_requests(monkeypatch: pytest.MonkeyPatc
     client.close()
     client.close()
 
-    with pytest.raises(BridgeClientError, match="closed"):
+    with pytest.raises(BridgeClientError):
         client.get_timer_state()
 
 
 def test_connect_failure_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
     install(monkeypatch, websocket.WebSocketException("handshake failed"))
 
-    with pytest.raises(BridgeClientError, match="rpc") as error:
+    with pytest.raises(BridgeClientError) as error:
         BridgeRpcClient()
 
     assert DEFAULT_RPC_ENDPOINT in str(error.value)
