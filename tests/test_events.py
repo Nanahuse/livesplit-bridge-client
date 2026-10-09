@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 import websocket
 
@@ -85,6 +87,21 @@ def test_event_sequence_and_session_are_preserved(monkeypatch: pytest.MonkeyPatc
     subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
 
     assert [subscriber.receive(), subscriber.receive()] == events
+    subscriber.close()
+
+
+def test_low_level_subscriber_preserves_unknown_event_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unknown = common_pb2.BridgeEvent(
+        session_id=12,
+        event_sequence=57,
+        type=cast(common_pb2.BridgeEventType, 999),
+    )
+    install(monkeypatch, FakeWebSocket([unknown.SerializeToString()]))
+    subscriber = BridgeEventSubscriber()
+
+    assert subscriber.receive() == unknown
     subscriber.close()
 
 

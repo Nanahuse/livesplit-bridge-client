@@ -4,6 +4,7 @@ from livesplit_bridge import (
     BridgeClient,
     BridgeEventSubscriber,
     BridgeRpcClient,
+    BridgeSyncState,
     bridge_pb2,
     common_pb2,
     run_pb2,
@@ -42,4 +43,16 @@ def check_bridge_client_types(client: BridgeClient, request: bridge_pb2.Request)
     assert_type(client.set_game_time_ticks(1), common_pb2.OperationResponse)
     assert_type(client.receive(), common_pb2.BridgeEvent | None)
     assert_type(next(client), common_pb2.BridgeEvent)
-    assert_type(client.reconnect(), None)
+    assert_type(client.synchronize(), BridgeSyncState)
+    assert_type(client.synchronize(include_completed_count=True), BridgeSyncState)
+    assert_type(client.reconnect(), BridgeSyncState)
+    assert_type(client.reconnect(include_completed_count=True), BridgeSyncState)
+
+
+def check_sync_state_types(state: BridgeSyncState) -> None:
+    assert_type(state.session_id, int)
+    assert_type(state.timer_state, common_pb2.TimerState)
+    assert_type(state.attempt, common_pb2.AttemptState)
+    assert_type(state.run, run_pb2.RunState)
+    assert_type(state.context_state, common_pb2.ContextState)
+    assert_type(state.completed_count, common_pb2.CompletedCount | None)

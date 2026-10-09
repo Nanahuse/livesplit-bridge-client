@@ -12,16 +12,20 @@ uv add livesplit-bridge-client
 ## 使い方
 
 ```python
-from livesplit_bridge import BridgeClient, common_pb2
+from livesplit_bridge import (
+    BridgeClient,
+    BridgeConnectionLostError,
+    BridgeResyncRequiredError,
+    common_pb2,
+)
 
 with BridgeClient() as client:
-    # Events接続はBridgeClientの生成時に始まります。イベント受信を開始し、
-    # 初期Query中に届いたイベントは呼び出し側でqueueしてください。
-    timer = client.get_timer_state()
-    run = client.get_run()
-    attempt = client.get_attempt()
-    context = client.get_context_state()
-    completed = client.get_completed_count()
+    state = client.synchronize(include_completed_count=True)
+    timer = state.timer_state
+    run = state.run
+    attempt = state.attempt
+    context = state.context_state
+    completed = state.completed_count
 
     result = client.split()
     print(result)  # 成功時のOperationResponseは空です。失敗時はBridgeRemoteErrorです。
@@ -39,10 +43,10 @@ with BridgeClient() as client:
 ```
 
 `BridgeClient`はEvents WebSocketを先に、RPC WebSocketを次に接続します。初期状態は
-`get_timer_state()`、`get_run()`、`get_attempt()`、`get_context_state()`、
-`get_completed_count()`で取得してください。接続時にBridgeからsnapshot eventは届きません。
-初期Queryと並行して届いたEventは、Query結果を反映してから処理できるよう呼び出し側で
-一時queueに保持してください。
+`synchronize()`で取得します。複数のQueryを順に実行し、すべてのResponseが同じRuntime
+sessionから返った場合だけ`BridgeSyncState`を返します。`completed_count`は通常省略され、
+`include_completed_count=True`で取得できます。接続時にsnapshot eventは送られません。
+同期中に届いたEventはEvents WebSocketの受信bufferに残り、同期完了後の`receive()`で処理されます。
 
 ## QueryとControl
 
@@ -86,8 +90,10 @@ callback時点の`timer_state`が含まれます。`EVENT_RUN_CHANGED`と
 WebSocket Ping/Pongはtransportのliveness確認に使用されます。
 
 Eventの`session_id`はRuntimeを識別し、`event_sequence`はRuntime内の順序と欠落検出に
-使用します。sequenceは1から始まり、revisionではありません。RPCの各Responseにも
-`session_id`があり、`client.session_id`は直近の成功したRPC応答の値を返します。
+使用します。clientは最初に受信したsequenceをbaselineとし、その後の連続性を検証します。
+RPCの各Responseにも`session_id`があり、`client.session_id`は直近のResponseの値を返します。
+Eventのsequence gap、未知のEvent type、またはRPC/Event sessionの不一致を検出すると、
+`BridgeResyncRequiredError`を送出します。保持中のstateを破棄して再同期してください。
 
 `receive(timeout_ms=...)`で単発受信できます。指定時間内にEventがなければ`None`を返します。
 timeoutを指定しない場合はEvent到着まで待ちます。Events WebSocketが閉じた場合は
@@ -100,9 +106,27 @@ with BridgeClient() as client:
         print(event.session_id, event.event_sequence, event.type)
 ```
 
-`reconnect()`は新しいEvents/RPC接続を作り、接続を入れ替えます。snapshot queryは実行しません。
-2つのWebSocketをまたぐ処理はatomicではないため、再接続前後のEvent欠落や重複は呼び出し側で
-`session_id`と`event_sequence`を使って扱ってください。
+```python
+try:
+    event = client.receive()
+except BridgeResyncRequiredError:
+    state = client.synchronize()
+```
+
+`reconnect()`は新しいEvents接続、RPC接続の順に確立し、新しい接続上でfull synchronizeを
+実行します。成功した場合だけ接続を切り替え、`BridgeSyncState`を返します。接続または同期に
+失敗した場合は、新しい接続を閉じて現在の接続を維持します。再接続後のEvent sequenceは新しい
+baselineから検証されます。
+
+```python
+try:
+    event = client.receive()
+except BridgeConnectionLostError:
+    state = client.reconnect()
+```
+
+Control requestは自動再送されません。タイムアウト後に実行結果が不明な場合は、
+`synchronize()`または必要なQueryで状態を確認してください。
 
 ## 低水準API
 

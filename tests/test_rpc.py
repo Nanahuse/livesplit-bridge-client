@@ -236,6 +236,72 @@ def test_remote_error_is_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
         client.start()
 
 
+def test_error_response_updates_session_before_raising_remote_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeWebSocket(
+        [
+            encoded_response(
+                1,
+                session_id=99,
+                error=common_pb2.BridgeError(
+                    code=common_pb2.OPERATION_FAILED,
+                    message="restart response",
+                ),
+            )
+        ]
+    )
+    install(monkeypatch, socket)
+    client = BridgeRpcClient()
+
+    with pytest.raises(BridgeRemoteError, match="restart response"):
+        client.start()
+
+    assert client.session_id == 99
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        bridge_pb2.Response(protocol_version=3, request_id=1, session_id=0),
+        bridge_pb2.Response(
+            protocol_version=3,
+            request_id=1,
+            session_id=42,
+            get_run=bridge_pb2.GetRunResponse(),
+        ),
+    ],
+    ids=["zero-session", "unexpected-body"],
+)
+def test_invalid_session_or_response_body_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    response: bridge_pb2.Response,
+) -> None:
+    install(monkeypatch, FakeWebSocket([response.SerializeToString()]))
+
+    with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError):
+        client.get_timer_state()
+
+
+def test_missing_response_body_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, FakeWebSocket([encoded_response(1)]))
+
+    with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError, match="body mismatch"):
+        client.get_timer_state()
+
+
+def test_low_level_rpc_records_session_transition(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse())
+    second = encoded_response(2, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse())
+    install(monkeypatch, FakeWebSocket([first, second]))
+
+    with BridgeRpcClient() as client:
+        client.get_timer_state()
+        client.get_timer_state()
+        assert client.session_change == (42, 99)
+
+
 def test_text_and_malformed_responses_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -22,6 +22,10 @@ class BridgeProtocolError(BridgeClientError):
     """Raised when the Bridge returns a response that violates the protocol."""
 
 
+class BridgeResyncRequiredError(BridgeClientError):
+    """Raised when cached client state may be stale and needs a full synchronize()."""
+
+
 class BridgeRemoteError(BridgeClientError):
     """Raised when the Bridge returns a structured error."""
 
@@ -51,6 +55,7 @@ class BridgeRpcClient:
         self._socket: Any | None = None
         self._next_request_id = 1
         self.session_id: int = 0
+        self.session_change: tuple[int, int] | None = None
         self._closed = False
         self._connect()
 
@@ -105,6 +110,7 @@ class BridgeRpcClient:
         if not isinstance(request, bridge_pb2.Request):
             raise TypeError("request must be a bridge_pb2.Request")
 
+        self.session_change = None
         request_id = self._next_request_id
         self._next_request_id += 1
         request.protocol_version = PROTOCOL_VERSION
@@ -150,9 +156,31 @@ class BridgeRpcClient:
             raise BridgeProtocolError(
                 f"Request ID mismatch: expected {request_id}, got {response.request_id}"
             )
+        if response.session_id == 0:
+            raise BridgeProtocolError("Bridge returned an invalid zero session ID")
+        previous_session_id = self.session_id
+        self.session_id = int(response.session_id)
+        self.session_change = (
+            (previous_session_id, self.session_id)
+            if previous_session_id not in (0, self.session_id)
+            else None
+        )
         if response.HasField("error"):
             raise BridgeRemoteError(response.error.code, response.error.message)
-        self.session_id = int(response.session_id)
+        expected_body = {
+            "get_timer_state": "get_timer_state",
+            "get_attempt": "get_attempt",
+            "get_run": "get_run",
+            "get_context_state": "get_context_state",
+            "get_completed_count": "get_completed_count",
+            "timer_operation": "operation",
+            "game_time_operation": "operation",
+        }.get(request.WhichOneof("body"))
+        actual_body = response.WhichOneof("body")
+        if expected_body is None or actual_body != expected_body:
+            raise BridgeProtocolError(
+                f"Response body mismatch: expected {expected_body!r}, got {actual_body!r}"
+            )
         return response
 
     def get_timer_state(self) -> common_pb2.TimerState:

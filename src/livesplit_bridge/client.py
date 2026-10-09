@@ -1,20 +1,62 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Self
+from dataclasses import dataclass
+from typing import NoReturn, Self
 
 from .events import DEFAULT_EVENT_ENDPOINT, BridgeEventSubscriber
 from .protocol import bridge_pb2, common_pb2, run_pb2
-from .rpc import DEFAULT_RPC_ENDPOINT, BridgeClientError, BridgeRpcClient
+from .rpc import (
+    DEFAULT_RPC_ENDPOINT,
+    BridgeClientError,
+    BridgeProtocolError,
+    BridgeResyncRequiredError,
+    BridgeRpcClient,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeSyncState:
+    """A consistent set of Bridge query results from one runtime session."""
+
+    session_id: int
+    timer_state: common_pb2.TimerState
+    attempt: common_pb2.AttemptState
+    run: run_pb2.RunState
+    context_state: common_pb2.ContextState
+    completed_count: common_pb2.CompletedCount | None = None
+
+
+def _synchronize_rpc(rpc: BridgeRpcClient, *, include_completed_count: bool) -> BridgeSyncState:
+    timer_state = rpc.get_timer_state()
+    timer_session = rpc.session_id
+    attempt = rpc.get_attempt()
+    attempt_session = rpc.session_id
+    run = rpc.get_run()
+    run_session = rpc.session_id
+    context_state = rpc.get_context_state()
+    context_session = rpc.session_id
+    completed_count = rpc.get_completed_count() if include_completed_count else None
+    sessions = [timer_session, attempt_session, run_session, context_session]
+    if include_completed_count:
+        sessions.append(rpc.session_id)
+    if not sessions or sessions[0] == 0 or any(s != sessions[0] for s in sessions):
+        raise BridgeResyncRequiredError(f"RPC session changed during synchronize(): {sessions}")
+    return BridgeSyncState(
+        session_id=sessions[0],
+        timer_state=timer_state,
+        attempt=attempt,
+        run=run,
+        context_state=context_state,
+        completed_count=completed_count,
+    )
 
 
 class BridgeClient(Iterator[common_pb2.BridgeEvent]):
-    """Integrated synchronous client that combines RPC and event subscription.
+    """Integrated synchronous client for queries, controls, and v3 events.
 
-    Owns a :class:`BridgeEventSubscriber` and a :class:`BridgeRpcClient`, each backed by
-    its own WebSocket connection. The subscriber is created first, then the RPC client.
-
-    This class is single-threaded: it must only be used from a single thread at a time.
+    This class is single-threaded and keeps event continuity and RPC session checks
+    alongside its two low-level WebSocket clients.
     """
 
     def __init__(
@@ -30,6 +72,11 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         self._closed = False
         self._rpc: BridgeRpcClient | None = None
         self._events: BridgeEventSubscriber | None = None
+        self._known_rpc_session_id = 0
+        self._event_session_id: int | None = None
+        self._last_event_sequence: int | None = None
+        self._synchronizing = False
+        self._needs_resync = False
         try:
             self._events = BridgeEventSubscriber(event_endpoint)
             self._rpc = BridgeRpcClient(
@@ -37,21 +84,29 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
                 response_timeout_ms=response_timeout_ms,
             )
         except Exception:
-            events = self._events
-            rpc = self._rpc
+            self._close_connections(self._events, self._rpc)
             self._events = None
             self._rpc = None
-            try:
-                if events is not None:
-                    events.close()
-            finally:
-                if rpc is not None:
-                    rpc.close()
             raise
+
+    @staticmethod
+    def _close_connections(
+        events: BridgeEventSubscriber | None, rpc: BridgeRpcClient | None
+    ) -> None:
+        try:
+            if events is not None:
+                events.close()
+        finally:
+            if rpc is not None:
+                rpc.close()
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise BridgeClientError("Client is closed")
+
+    def _raise_resync(self, message: str) -> NoReturn:
+        self._needs_resync = True
+        raise BridgeResyncRequiredError(message)
 
     @property
     def rpc(self) -> BridgeRpcClient:
@@ -69,23 +124,17 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
 
     @property
     def session_id(self) -> int:
-        """Session ID from the most recent RPC response, or zero before the first RPC."""
+        """Session ID from the latest valid RPC response, or zero before one arrives."""
         return self.rpc.session_id
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        events = self._events
-        rpc = self._rpc
+        events, rpc = self._events, self._rpc
         self._events = None
         self._rpc = None
-        try:
-            if events is not None:
-                events.close()
-        finally:
-            if rpc is not None:
-                rpc.close()
+        self._close_connections(events, rpc)
 
     def __enter__(self) -> Self:
         self._ensure_open()
@@ -94,91 +143,177 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def _observe_rpc_session(self) -> None:
+        rpc_session = self.rpc.session_id
+        if rpc_session == 0:
+            raise BridgeProtocolError("RPC response has no valid session")
+        if (
+            not self._synchronizing
+            and self._event_session_id is not None
+            and self._event_session_id != rpc_session
+        ):
+            self._raise_resync(
+                "RPC and Events sessions differ; call synchronize() after reconnecting"
+            )
+        if self._known_rpc_session_id not in (0, rpc_session) and not self._synchronizing:
+            previous = self._known_rpc_session_id
+            self._known_rpc_session_id = rpc_session
+            self._raise_resync(f"RPC session changed from {previous} to {rpc_session}")
+        self._known_rpc_session_id = rpc_session
+
     def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
-        return self.rpc.request(request)
+        self._ensure_open()
+        if self._needs_resync and not self._synchronizing:
+            self._raise_resync("Full synchronize() is required before more RPC requests")
+        rpc = self.rpc
+        try:
+            response = rpc.request(request)
+        except Exception:
+            self._observe_rpc_session()
+            raise
+        self._observe_rpc_session()
+        return response
 
     def get_timer_state(self) -> common_pb2.TimerState:
-        return self.rpc.get_timer_state()
+        return self.request(
+            bridge_pb2.Request(get_timer_state=bridge_pb2.GetTimerStateRequest())
+        ).get_timer_state.timer_state
 
     def get_run(self) -> run_pb2.RunState:
-        return self.rpc.get_run()
+        return self.request(bridge_pb2.Request(get_run=bridge_pb2.GetRunRequest())).get_run.run
 
     def get_attempt(self) -> common_pb2.AttemptState:
-        return self.rpc.get_attempt()
+        return self.request(
+            bridge_pb2.Request(get_attempt=bridge_pb2.GetAttemptRequest())
+        ).get_attempt.attempt
 
     def get_context_state(self) -> common_pb2.ContextState:
-        return self.rpc.get_context_state()
+        return self.request(
+            bridge_pb2.Request(get_context_state=bridge_pb2.GetContextStateRequest())
+        ).get_context_state.context_state
 
     def get_completed_count(self) -> common_pb2.CompletedCount:
-        return self.rpc.get_completed_count()
+        return self.request(
+            bridge_pb2.Request(get_completed_count=bridge_pb2.GetCompletedCountRequest())
+        ).get_completed_count.completed_count
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType
     ) -> common_pb2.OperationResponse:
-        return self.rpc.timer_operation(operation)
+        return self.request(
+            bridge_pb2.Request(
+                timer_operation=bridge_pb2.TimerOperationRequest(operation=operation)
+            )
+        ).operation
 
     def game_time_operation(
         self, operation: common_pb2.GameTimeOperationType, *, ticks: int | None = None
     ) -> common_pb2.OperationResponse:
-        return self.rpc.game_time_operation(operation, ticks=ticks)
+        operation_request = bridge_pb2.GameTimeOperationRequest(operation=operation)
+        if ticks is not None:
+            operation_request.ticks = ticks
+        return self.request(bridge_pb2.Request(game_time_operation=operation_request)).operation
 
     def start(self) -> common_pb2.OperationResponse:
-        return self.rpc.start()
+        return self.timer_operation(common_pb2.TIMER_START)
 
     def split(self) -> common_pb2.OperationResponse:
-        return self.rpc.split()
+        return self.timer_operation(common_pb2.TIMER_SPLIT)
 
     def skip(self) -> common_pb2.OperationResponse:
-        return self.rpc.skip()
+        return self.timer_operation(common_pb2.TIMER_SKIP)
 
     def undo(self) -> common_pb2.OperationResponse:
-        return self.rpc.undo()
+        return self.timer_operation(common_pb2.TIMER_UNDO)
 
     def reset(self) -> common_pb2.OperationResponse:
-        return self.rpc.reset()
+        return self.timer_operation(common_pb2.TIMER_RESET)
 
     def pause(self) -> common_pb2.OperationResponse:
-        return self.rpc.pause()
+        return self.timer_operation(common_pb2.TIMER_PAUSE)
 
     def resume(self) -> common_pb2.OperationResponse:
-        return self.rpc.resume()
+        return self.timer_operation(common_pb2.TIMER_RESUME)
 
     def initialize_game_time(self) -> common_pb2.OperationResponse:
-        return self.rpc.initialize_game_time()
+        return self.game_time_operation(common_pb2.INITIALIZE)
 
     def set_game_time_ticks(self, ticks: int) -> common_pb2.OperationResponse:
-        return self.rpc.set_game_time_ticks(ticks)
+        return self.game_time_operation(common_pb2.SET, ticks=ticks)
 
     def pause_game_time(self) -> common_pb2.OperationResponse:
-        return self.rpc.pause_game_time()
+        return self.game_time_operation(common_pb2.GAME_TIME_PAUSE)
 
     def resume_game_time(self) -> common_pb2.OperationResponse:
-        return self.rpc.resume_game_time()
+        return self.game_time_operation(common_pb2.GAME_TIME_RESUME)
+
+    def synchronize(self, *, include_completed_count: bool = False) -> BridgeSyncState:
+        """Fetch a complete client snapshot and verify every response has one session."""
+        self._ensure_open()
+        self._synchronizing = True
+        try:
+            state = _synchronize_rpc(self.rpc, include_completed_count=include_completed_count)
+        except Exception:
+            self._needs_resync = True
+            raise
+        finally:
+            self._synchronizing = False
+        self._known_rpc_session_id = state.session_id
+        self._last_event_sequence = None
+        self._event_session_id = state.session_id
+        self._needs_resync = False
+        return state
 
     def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent | None:
-        return self.events.receive(timeout_ms=timeout_ms)
+        self._ensure_open()
+        if self._needs_resync:
+            self._raise_resync("Full synchronize() is required before receiving more events")
+        event = self.events.receive(timeout_ms=timeout_ms)
+        if event is None:
+            return None
+        known_types = {
+            common_pb2.EVENT_TIMER_STARTED,
+            common_pb2.EVENT_TIMER_SPLIT,
+            common_pb2.EVENT_TIMER_SKIPPED,
+            common_pb2.EVENT_TIMER_UNDO,
+            common_pb2.EVENT_TIMER_RESET,
+            common_pb2.EVENT_TIMER_PHASE_CHANGED,
+            common_pb2.EVENT_RUN_CHANGED,
+            common_pb2.EVENT_CONTEXT_CHANGED,
+        }
+        if event.type not in known_types:
+            self._raise_resync(f"Unknown Bridge event type: {event.type}")
+        if event.session_id == 0:
+            self._raise_resync("Bridge event has an invalid zero session ID")
+        if self._known_rpc_session_id and event.session_id != self._known_rpc_session_id:
+            self._raise_resync(
+                f"Event session {event.session_id} does not match RPC session "
+                f"{self._known_rpc_session_id}"
+            )
+        if self._event_session_id is not None and event.session_id != self._event_session_id:
+            self._raise_resync(
+                f"Event session changed from {self._event_session_id} to {event.session_id}"
+            )
+        self._event_session_id = event.session_id
+        if self._last_event_sequence is not None:
+            expected = self._last_event_sequence + 1
+            if event.event_sequence != expected:
+                self._raise_resync(
+                    f"Event sequence gap: expected {expected}, got {event.event_sequence}"
+                )
+        self._last_event_sequence = event.event_sequence
+        return event
 
     def __iter__(self) -> Self:
         return self
 
     def __next__(self) -> common_pb2.BridgeEvent:
-        return next(self.events)
+        while (event := self.receive()) is None:
+            pass
+        return event
 
-    def reconnect(self) -> None:
-        """Recreate the subscriber and RPC client on fresh WebSocket connections.
-
-        A new subscriber is created first, then a new RPC client. On any failure the
-        new resources are closed and the old resources are kept, so the
-        caller can retry. After a successful switch the old subscriber and RPC client are
-        closed (old events first, then old RPC); even if closing an old resource raises,
-        the new resources remain current.
-
-        This operation is not atomic across the event and RPC connections: the event
-        WebSocket is connected before the next RPC completes, so event gaps or duplicates
-        are not prevented, and the next response and subsequent events are not ordered
-        relative to each other. Use ``session_id`` and ``event_sequence`` to reconcile on
-        the caller side if required.
-        """
+    def reconnect(self, *, include_completed_count: bool = False) -> BridgeSyncState:
+        """Replace both connections only after the new pair has synchronized."""
         self._ensure_open()
         new_events = BridgeEventSubscriber(self._event_endpoint)
         new_rpc: BridgeRpcClient | None = None
@@ -187,21 +322,16 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
                 self._rpc_endpoint,
                 response_timeout_ms=self._response_timeout_ms,
             )
+            state = _synchronize_rpc(new_rpc, include_completed_count=include_completed_count)
         except Exception:
-            try:
-                if new_rpc is not None:
-                    new_rpc.close()
-            finally:
-                new_events.close()
+            self._close_connections(new_events, new_rpc)
             raise
 
-        old_events = self._events
-        old_rpc = self._rpc
-        self._events = new_events
-        self._rpc = new_rpc
-        try:
-            if old_events is not None:
-                old_events.close()
-        finally:
-            if old_rpc is not None:
-                old_rpc.close()
+        old_events, old_rpc = self._events, self._rpc
+        self._events, self._rpc = new_events, new_rpc
+        self._known_rpc_session_id = state.session_id
+        self._event_session_id = state.session_id
+        self._last_event_sequence = None
+        self._needs_resync = False
+        self._close_connections(old_events, old_rpc)
+        return state
