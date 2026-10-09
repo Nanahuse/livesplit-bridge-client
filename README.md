@@ -15,6 +15,9 @@ uv add livesplit-bridge-client
 from livesplit_bridge import (
     BridgeClient,
     BridgeConnectionLostError,
+    BridgeProtocolError,
+    BridgeReconnectRequiredError,
+    BridgeRemoteError,
     BridgeResyncRequiredError,
     common_pb2,
 )
@@ -90,10 +93,19 @@ callback時点の`timer_state`が含まれます。`EVENT_RUN_CHANGED`と
 WebSocket Ping/Pongはtransportのliveness確認に使用されます。
 
 Eventの`session_id`はRuntimeを識別し、`event_sequence`はRuntime内の順序と欠落検出に
-使用します。clientは最初に受信したsequenceをbaselineとし、その後の連続性を検証します。
+使用します。clientは最初に受信したEventのsequenceをbaselineとし、その後の連続性を検証します。
 RPCの各Responseにも`session_id`があり、`client.session_id`は直近のResponseの値を返します。
-Eventのsequence gap、未知のEvent type、またはRPC/Event sessionの不一致を検出すると、
-`BridgeResyncRequiredError`を送出します。保持中のstateを破棄して再同期してください。
+
+- sequence gap、未知のEvent typeは`BridgeResyncRequiredError`です。接続を維持したまま
+  `synchronize()`で状態を取り直せます。
+- RPC session変更、RPC/Event session不一致、Events session変更は
+  `BridgeReconnectRequiredError`です。両WebSocketを張り直す`reconnect()`を使ってください。
+- Bridgeからの有効なerror responseは`BridgeRemoteError`です。
+- 不正なprotobufやprotocol envelope/bodyは`BridgeProtocolError`です。
+
+`synchronize()`は`RESYNC_REQUIRED`を回復しますが、`RECONNECT_REQUIRED`では拒否されます。
+成功後はEvent sequence baselineを解除し、次のEventから検証を再開します。RPC session changeが
+疑われるときは、通常のQueryやControlも停止して`reconnect()`を要求します。
 
 `receive(timeout_ms=...)`で単発受信できます。指定時間内にEventがなければ`None`を返します。
 timeoutを指定しない場合はEvent到着まで待ちます。Events WebSocketが閉じた場合は
@@ -109,14 +121,19 @@ with BridgeClient() as client:
 ```python
 try:
     event = client.receive()
+except BridgeReconnectRequiredError:
+    state = client.reconnect()
 except BridgeResyncRequiredError:
     state = client.synchronize()
+except BridgeConnectionLostError:
+    state = client.reconnect()
 ```
 
 `reconnect()`は新しいEvents接続、RPC接続の順に確立し、新しい接続上でfull synchronizeを
 実行します。成功した場合だけ接続を切り替え、`BridgeSyncState`を返します。接続または同期に
 失敗した場合は、新しい接続を閉じて現在の接続を維持します。再接続後のEvent sequenceは新しい
-baselineから検証されます。
+baselineから検証されます。Events sessionは最初のEvent受信で確定し、RPC sessionと違う場合は
+`BridgeReconnectRequiredError`になります。
 
 ```python
 try:
@@ -125,8 +142,10 @@ except BridgeConnectionLostError:
     state = client.reconnect()
 ```
 
-Control requestは自動再送されません。タイムアウト後に実行結果が不明な場合は、
-`synchronize()`または必要なQueryで状態を確認してください。
+`BridgeConnectionLostError`が発生した後は`reconnect()`を使ってください。新しい接続では最初の
+Event受信時にEvents sessionを確定します。Control request（Game Time操作を含む）は自動再送
+されません。RPC timeout後に実行結果が不明な場合は、必要なQueryまたは`synchronize()`で状態を
+確認してください。
 
 ## 低水準API
 

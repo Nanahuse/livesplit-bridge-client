@@ -261,6 +261,36 @@ def test_error_response_updates_session_before_raising_remote_error(
     client.close()
 
 
+def test_error_response_records_session_transition_for_this_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeWebSocket(
+        [
+            encoded_response(
+                1,
+                session_id=42,
+                get_timer_state=bridge_pb2.GetTimerStateResponse(),
+            ),
+            encoded_response(
+                2,
+                session_id=99,
+                error=common_pb2.BridgeError(
+                    code=common_pb2.OPERATION_FAILED,
+                    message="new runtime",
+                ),
+            ),
+        ]
+    )
+    install(monkeypatch, socket)
+
+    with BridgeRpcClient() as client:
+        client.get_timer_state()
+        with pytest.raises(BridgeRemoteError, match="new runtime"):
+            client.start()
+        assert client.session_id == 99
+        assert client.session_change == (42, 99)
+
+
 @pytest.mark.parametrize(
     "response",
     [
@@ -282,13 +312,31 @@ def test_invalid_session_or_response_body_is_rejected(
 
     with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError):
         client.get_timer_state()
+    assert client.session_id == 0
+    assert client.session_change is None
 
 
 def test_missing_response_body_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    install(monkeypatch, FakeWebSocket([encoded_response(1)]))
+    install(
+        monkeypatch,
+        FakeWebSocket(
+            [
+                encoded_response(
+                    1,
+                    session_id=42,
+                    get_timer_state=bridge_pb2.GetTimerStateResponse(),
+                ),
+                encoded_response(2, session_id=99),
+            ]
+        ),
+    )
 
-    with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError, match="body mismatch"):
+    with BridgeRpcClient() as client:
         client.get_timer_state()
+        with pytest.raises(BridgeProtocolError, match="body mismatch"):
+            client.get_timer_state()
+        assert client.session_id == 42
+        assert client.session_change is None
 
 
 def test_low_level_rpc_records_session_transition(monkeypatch: pytest.MonkeyPatch) -> None:

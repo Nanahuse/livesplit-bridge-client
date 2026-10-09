@@ -2,19 +2,30 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import NoReturn, Self, TypeVar
 
-from .events import DEFAULT_EVENT_ENDPOINT, BridgeEventSubscriber
+from .events import (
+    DEFAULT_EVENT_ENDPOINT,
+    BridgeConnectionLostError,
+    BridgeEventSubscriber,
+)
 from .protocol import bridge_pb2, common_pb2, run_pb2
 from .rpc import (
     DEFAULT_RPC_ENDPOINT,
     BridgeClientError,
-    BridgeProtocolError,
+    BridgeReconnectRequiredError,
     BridgeResyncRequiredError,
     BridgeRpcClient,
 )
 
 _QueryResult = TypeVar("_QueryResult")
+
+
+class BridgeRecoveryState(StrEnum):
+    HEALTHY = "HEALTHY"
+    RESYNC_REQUIRED = "RESYNC_REQUIRED"
+    RECONNECT_REQUIRED = "RECONNECT_REQUIRED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,15 +48,20 @@ def _synchronize_rpc(rpc: BridgeRpcClient, *, include_completed_count: bool) -> 
         try:
             result = method()
         except Exception as error:
-            current_session_id = rpc.session_id
-            if session_id and current_session_id not in (0, session_id):
-                raise BridgeResyncRequiredError(
-                    "RPC session changed during synchronize()"
+            if rpc.session_change is not None:
+                old, new = rpc.session_change
+                raise BridgeReconnectRequiredError(
+                    f"RPC session changed during synchronize(): {old} to {new}"
                 ) from error
             raise
+        if rpc.session_change is not None:
+            old, new = rpc.session_change
+            raise BridgeReconnectRequiredError(
+                f"RPC session changed during synchronize(): {old} to {new}"
+            )
         current_session_id = rpc.session_id
         if session_id and current_session_id != session_id:
-            raise BridgeResyncRequiredError(
+            raise BridgeReconnectRequiredError(
                 f"RPC session changed during synchronize(): {session_id} to {current_session_id}"
             )
         session_id = current_session_id
@@ -57,7 +73,7 @@ def _synchronize_rpc(rpc: BridgeRpcClient, *, include_completed_count: bool) -> 
     context_state = query(rpc.get_context_state)
     completed_count = query(rpc.get_completed_count) if include_completed_count else None
     if session_id == 0:
-        raise BridgeResyncRequiredError("synchronize() did not receive a valid session")
+        raise BridgeReconnectRequiredError("synchronize() did not receive a valid session")
     return BridgeSyncState(
         session_id=session_id,
         timer_state=timer_state,
@@ -91,8 +107,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         self._known_rpc_session_id = 0
         self._event_session_id: int | None = None
         self._last_event_sequence: int | None = None
-        self._synchronizing = False
-        self._needs_resync = False
+        self._recovery_state = BridgeRecoveryState.HEALTHY
         try:
             self._events = BridgeEventSubscriber(event_endpoint)
             self._rpc = BridgeRpcClient(
@@ -120,9 +135,24 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         if self._closed:
             raise BridgeClientError("Client is closed")
 
+    @property
+    def recovery_state(self) -> BridgeRecoveryState:
+        return self._recovery_state
+
     def _raise_resync(self, message: str) -> NoReturn:
-        self._needs_resync = True
+        if self._recovery_state is not BridgeRecoveryState.RECONNECT_REQUIRED:
+            self._recovery_state = BridgeRecoveryState.RESYNC_REQUIRED
         raise BridgeResyncRequiredError(message)
+
+    def _raise_reconnect(self, message: str) -> NoReturn:
+        self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
+        raise BridgeReconnectRequiredError(message)
+
+    def _ensure_healthy(self) -> None:
+        if self._recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED:
+            raise BridgeReconnectRequiredError("Reconnect is required before client operations")
+        if self._recovery_state is BridgeRecoveryState.RESYNC_REQUIRED:
+            raise BridgeResyncRequiredError("synchronize() is required before client operations")
 
     @property
     def rpc(self) -> BridgeRpcClient:
@@ -162,25 +192,21 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def _observe_rpc_session(self) -> None:
         rpc_session = self.rpc.session_id
         if rpc_session == 0:
-            raise BridgeProtocolError("RPC response has no valid session")
-        if (
-            not self._synchronizing
-            and self._event_session_id is not None
-            and self._event_session_id != rpc_session
-        ):
-            self._raise_resync(
-                "RPC and Events sessions differ; call synchronize() after reconnecting"
+            return
+        if self.rpc.session_change is not None:
+            previous, new = self.rpc.session_change
+            self._raise_reconnect(f"RPC session changed from {previous} to {new}")
+        if self._event_session_id is not None and self._event_session_id != rpc_session:
+            self._raise_reconnect("RPC and Events sessions differ; reconnect() is required")
+        if self._known_rpc_session_id not in (0, rpc_session):
+            self._raise_reconnect(
+                f"RPC session changed from {self._known_rpc_session_id} to {rpc_session}"
             )
-        if self._known_rpc_session_id not in (0, rpc_session) and not self._synchronizing:
-            previous = self._known_rpc_session_id
-            self._known_rpc_session_id = rpc_session
-            self._raise_resync(f"RPC session changed from {previous} to {rpc_session}")
         self._known_rpc_session_id = rpc_session
 
     def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
         self._ensure_open()
-        if self._needs_resync and not self._synchronizing:
-            self._raise_resync("Full synchronize() is required before more RPC requests")
+        self._ensure_healthy()
         rpc = self.rpc
         try:
             response = rpc.request(request)
@@ -266,25 +292,36 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def synchronize(self, *, include_completed_count: bool = False) -> BridgeSyncState:
         """Fetch a complete client snapshot and verify every response has one session."""
         self._ensure_open()
-        self._synchronizing = True
+        if self._recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED:
+            raise BridgeReconnectRequiredError(
+                "synchronize() cannot recover a lost session; call reconnect()"
+            )
+        previous_session_id = self._known_rpc_session_id
         try:
             state = _synchronize_rpc(self.rpc, include_completed_count=include_completed_count)
-        except Exception:
-            self._needs_resync = True
+        except BridgeReconnectRequiredError:
+            self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
             raise
-        finally:
-            self._synchronizing = False
+        if previous_session_id and previous_session_id != state.session_id:
+            self._raise_reconnect(
+                f"RPC session changed during synchronize(): {previous_session_id} "
+                f"to {state.session_id}"
+            )
+        if self._event_session_id is not None and self._event_session_id != state.session_id:
+            self._raise_reconnect("RPC and Events sessions differ; reconnect() is required")
         self._known_rpc_session_id = state.session_id
         self._last_event_sequence = None
-        self._event_session_id = state.session_id
-        self._needs_resync = False
+        self._recovery_state = BridgeRecoveryState.HEALTHY
         return state
 
     def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent | None:
         self._ensure_open()
-        if self._needs_resync:
-            self._raise_resync("Full synchronize() is required before receiving more events")
-        event = self.events.receive(timeout_ms=timeout_ms)
+        self._ensure_healthy()
+        try:
+            event = self.events.receive(timeout_ms=timeout_ms)
+        except BridgeConnectionLostError:
+            self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
+            raise
         if event is None:
             return None
         known_types = {
@@ -300,14 +337,14 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         if event.type not in known_types:
             self._raise_resync(f"Unknown Bridge event type: {event.type}")
         if event.session_id == 0:
-            self._raise_resync("Bridge event has an invalid zero session ID")
+            self._raise_reconnect("Bridge event has an invalid zero session ID")
         if self._known_rpc_session_id and event.session_id != self._known_rpc_session_id:
-            self._raise_resync(
+            self._raise_reconnect(
                 f"Event session {event.session_id} does not match RPC session "
                 f"{self._known_rpc_session_id}"
             )
         if self._event_session_id is not None and event.session_id != self._event_session_id:
-            self._raise_resync(
+            self._raise_reconnect(
                 f"Event session changed from {self._event_session_id} to {event.session_id}"
             )
         self._event_session_id = event.session_id
@@ -346,8 +383,8 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         old_events, old_rpc = self._events, self._rpc
         self._events, self._rpc = new_events, new_rpc
         self._known_rpc_session_id = state.session_id
-        self._event_session_id = state.session_id
+        self._event_session_id = None
         self._last_event_sequence = None
-        self._needs_resync = False
+        self._recovery_state = BridgeRecoveryState.HEALTHY
         self._close_connections(old_events, old_rpc)
         return state

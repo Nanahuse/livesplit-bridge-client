@@ -10,7 +10,12 @@ from livesplit_bridge import (
     DEFAULT_RPC_ENDPOINT,
     BridgeClient,
     BridgeClientError,
+    BridgeConnectionLostError,
+    BridgeProtocolError,
+    BridgeReconnectRequiredError,
+    BridgeRecoveryState,
     BridgeRemoteError,
+    BridgeResponseTimeoutError,
     BridgeResyncRequiredError,
     BridgeSyncState,
     bridge_pb2,
@@ -222,7 +227,7 @@ def test_reconnect_keeps_old_connections_if_synchronize_fails(
     install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
     client = BridgeClient()
 
-    with pytest.raises(BridgeResyncRequiredError, match="changed during synchronize"):
+    with pytest.raises(BridgeReconnectRequiredError, match="changed during synchronize"):
         client.reconnect()
 
     assert not old_events.closed
@@ -258,6 +263,7 @@ def test_synchronize_returns_consistent_snapshot_and_optional_completed_count(
     assert state.context_state.current_comparison == "Personal Best"
     assert state.completed_count is not None
     assert state.completed_count.completed_count == 9
+    assert client._event_session_id is None
     assert len(rpc_socket.sent) == 5
     client.close()
 
@@ -275,13 +281,14 @@ def test_synchronize_does_not_return_partial_state_on_session_change(
     install(monkeypatch, event_socket, FakeWebSocket(responses))
     client = BridgeClient()
 
-    with pytest.raises(BridgeResyncRequiredError, match="changed during synchronize"):
+    with pytest.raises(BridgeReconnectRequiredError, match="changed during synchronize"):
         client.synchronize()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
 
     client.close()
 
 
-def test_synchronize_error_response_on_new_session_requires_resync(
+def test_synchronize_error_response_on_new_session_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rpc_socket = FakeWebSocket(
@@ -300,8 +307,9 @@ def test_synchronize_error_response_on_new_session_requires_resync(
     install(monkeypatch, FakeWebSocket(), rpc_socket)
     client = BridgeClient()
 
-    with pytest.raises(BridgeResyncRequiredError, match="changed during synchronize"):
+    with pytest.raises(BridgeReconnectRequiredError, match="changed during synchronize"):
         client.synchronize()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
 
     client.close()
 
@@ -319,7 +327,95 @@ def test_synchronize_resets_event_sequence_baseline(
 
     assert client.receive() == events[0]
     client.synchronize()
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
     assert client.receive() == events[1]
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "initial_state", [BridgeRecoveryState.HEALTHY, BridgeRecoveryState.RESYNC_REQUIRED]
+)
+def test_remote_error_during_sync_preserves_existing_recovery_state(
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: BridgeRecoveryState,
+) -> None:
+    events = [
+        common_pb2.BridgeEvent(session_id=42, event_sequence=n, type=common_pb2.EVENT_RUN_CHANGED)
+        for n in (10, 12)
+    ]
+    responses = [
+        encoded_response(
+            1,
+            session_id=42,
+            get_timer_state=bridge_pb2.GetTimerStateResponse(),
+        ),
+        encoded_response(
+            2,
+            session_id=42,
+            error=common_pb2.BridgeError(
+                code=common_pb2.OPERATION_FAILED,
+                message="query failed",
+            ),
+        ),
+    ]
+    event_socket = FakeWebSocket([event.SerializeToString() for event in events])
+    rpc_socket = FakeWebSocket(responses)
+    install(monkeypatch, event_socket, rpc_socket)
+    client = BridgeClient()
+    if initial_state is BridgeRecoveryState.RESYNC_REQUIRED:
+        client.receive()
+        with pytest.raises(BridgeResyncRequiredError):
+            client.receive()
+
+    with pytest.raises(BridgeRemoteError, match="query failed"):
+        client.synchronize()
+    assert client.recovery_state is initial_state
+    client.close()
+
+
+def test_sync_session_different_from_known_rpc_session_requires_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [
+        encoded_response(
+            1,
+            session_id=42,
+            get_timer_state=bridge_pb2.GetTimerStateResponse(),
+        ),
+        *synchronization_responses(99, start_request_id=2),
+    ]
+    install(monkeypatch, FakeWebSocket(), FakeWebSocket(responses))
+    client = BridgeClient()
+
+    client.get_timer_state()
+    with pytest.raises(BridgeReconnectRequiredError, match="changed during synchronize"):
+        client.synchronize()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
+    client.close()
+
+
+def test_sequence_gap_can_recover_with_synchronize_and_new_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        common_pb2.BridgeEvent(session_id=42, event_sequence=n, type=common_pb2.EVENT_RUN_CHANGED)
+        for n in (57, 60, 900)
+    ]
+    event_socket = FakeWebSocket([event.SerializeToString() for event in events])
+    rpc_socket = FakeWebSocket(synchronization_responses())
+    install(monkeypatch, event_socket, rpc_socket)
+    client = BridgeClient()
+
+    assert client.receive() == events[0]
+    with pytest.raises(BridgeResyncRequiredError, match="sequence gap"):
+        client.receive()
+    assert client.recovery_state is BridgeRecoveryState.RESYNC_REQUIRED
+    with pytest.raises(BridgeResyncRequiredError, match="synchronize"):
+        client.get_run()
+
+    client.synchronize()
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
+    assert client.receive() == events[2]
     client.close()
 
 
@@ -343,32 +439,94 @@ def test_first_event_can_establish_temporary_session_before_rpc(
     client.close()
 
 
-def test_rpc_session_change_requires_resync_before_more_queries(
+def test_rpc_session_change_requires_reconnect_before_more_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_events = FakeWebSocket()
+    old_rpc = FakeWebSocket(
+        [
+            encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse()),
+            encoded_response(2, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse()),
+        ]
+    )
+    new_events = FakeWebSocket()
+    new_rpc = FakeWebSocket(synchronization_responses(99))
+    install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
+    client = BridgeClient()
+
+    client.get_timer_state()
+    with pytest.raises(BridgeReconnectRequiredError, match="changed from 42 to 99"):
+        client.get_timer_state()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
+    with pytest.raises(BridgeReconnectRequiredError, match="Reconnect is required"):
+        client.get_timer_state()
+    with pytest.raises(BridgeReconnectRequiredError, match="cannot recover"):
+        client.synchronize()
+
+    state = client.reconnect()
+    assert state.session_id == 99
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
+    assert old_events.closed
+    assert old_rpc.closed
+    assert client._event_session_id is None
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("rpc_socket", "expected_error"),
+    [
+        (FakeWebSocket(timeout=True), BridgeResponseTimeoutError),
+        (
+            FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")]),
+            BridgeClientError,
+        ),
+        (FakeWebSocket([b"\xff"]), BridgeProtocolError),
+    ],
+)
+def test_initial_rpc_failures_preserve_original_exception_and_healthy_state(
+    monkeypatch: pytest.MonkeyPatch,
+    rpc_socket: FakeWebSocket,
+    expected_error: type[Exception],
+) -> None:
+    replacement = FakeWebSocket()
+    install(monkeypatch, FakeWebSocket(), rpc_socket, replacement)
+    client = BridgeClient()
+
+    with pytest.raises(expected_error):
+        client.get_timer_state()
+
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
+    client.close()
+
+
+def test_rpc_error_response_session_change_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rpc_socket = FakeWebSocket(
         [
             encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse()),
-            encoded_response(2, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse()),
-            *synchronization_responses(99, start_request_id=3),
-            encoded_response(7, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse()),
+            encoded_response(
+                2,
+                session_id=99,
+                error=common_pb2.BridgeError(
+                    code=common_pb2.OPERATION_FAILED,
+                    message="new runtime unavailable",
+                ),
+            ),
         ]
     )
     install(monkeypatch, FakeWebSocket(), rpc_socket)
     client = BridgeClient()
 
     client.get_timer_state()
-    with pytest.raises(BridgeResyncRequiredError, match="changed from 42 to 99"):
-        client.get_timer_state()
-    with pytest.raises(BridgeResyncRequiredError, match="Full synchronize"):
-        client.get_timer_state()
-
-    assert client.synchronize().session_id == 99
-    assert client.get_timer_state() == common_pb2.TimerState()
+    with pytest.raises(BridgeReconnectRequiredError, match="changed from 42 to 99"):
+        client.start()
+    assert client.session_id == 99
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
     client.close()
 
 
-def test_rpc_event_session_mismatch_requires_resync(
+def test_rpc_event_session_mismatch_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     event = common_pb2.BridgeEvent(
@@ -381,8 +539,70 @@ def test_rpc_event_session_mismatch_requires_resync(
     client = BridgeClient()
 
     client.get_timer_state()
-    with pytest.raises(BridgeResyncRequiredError, match="does not match RPC session"):
+    with pytest.raises(BridgeReconnectRequiredError, match="does not match RPC session"):
         client.receive()
+    client.close()
+
+
+def test_event_connection_loss_requires_reconnect_without_rewriting_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install(
+        monkeypatch,
+        FakeWebSocket([websocket.WebSocketConnectionClosedException("event socket closed")]),
+        FakeWebSocket(),
+    )
+    client = BridgeClient()
+
+    with pytest.raises(BridgeConnectionLostError, match="closed"):
+        client.receive()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
+    with pytest.raises(BridgeReconnectRequiredError, match="Reconnect is required"):
+        client.receive()
+    client.close()
+
+
+def test_event_session_change_requires_reconnect_and_blocks_synchronize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = [
+        common_pb2.BridgeEvent(session_id=42, event_sequence=1, type=common_pb2.EVENT_RUN_CHANGED),
+        common_pb2.BridgeEvent(session_id=77, event_sequence=2, type=common_pb2.EVENT_RUN_CHANGED),
+    ]
+    install(
+        monkeypatch, FakeWebSocket([event.SerializeToString() for event in events]), FakeWebSocket()
+    )
+    client = BridgeClient()
+
+    assert client.receive() == events[0]
+    with pytest.raises(BridgeReconnectRequiredError, match="Event session changed"):
+        client.receive()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
+    with pytest.raises(BridgeReconnectRequiredError, match="cannot recover"):
+        client.synchronize()
+    client.close()
+
+
+def test_reconnect_first_event_must_match_new_rpc_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = common_pb2.BridgeEvent(
+        session_id=42, event_sequence=57, type=common_pb2.EVENT_RUN_CHANGED
+    )
+    install(
+        monkeypatch,
+        FakeWebSocket(),
+        FakeWebSocket(),
+        FakeWebSocket([event.SerializeToString()]),
+        FakeWebSocket(synchronization_responses(99)),
+    )
+    client = BridgeClient()
+
+    assert client.reconnect().session_id == 99
+    assert client._event_session_id is None
+    with pytest.raises(BridgeReconnectRequiredError, match="does not match RPC session"):
+        client.receive()
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
     client.close()
 
 
@@ -400,6 +620,8 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
                 ),
             ],
             "sequence gap",
+            BridgeResyncRequiredError,
+            BridgeRecoveryState.RESYNC_REQUIRED,
         ),
         (
             [
@@ -411,6 +633,8 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
                 ),
             ],
             "session",
+            BridgeReconnectRequiredError,
+            BridgeRecoveryState.RECONNECT_REQUIRED,
         ),
         (
             [
@@ -421,16 +645,19 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
                 )
             ],
             "Unknown Bridge event",
+            BridgeResyncRequiredError,
+            BridgeRecoveryState.RESYNC_REQUIRED,
         ),
     ]
-    for events, error_text in cases:
+    for events, error_text, error_type, expected_state in cases:
         event_socket = FakeWebSocket([event.SerializeToString() for event in events])
         install(monkeypatch, event_socket, FakeWebSocket())
         client = BridgeClient()
         if len(events) > 1:
             client.receive()
-        with pytest.raises(BridgeResyncRequiredError, match=error_text):
+        with pytest.raises(error_type, match=error_text):
             client.receive()
+        assert client.recovery_state is expected_state
         client.close()
 
 
@@ -464,6 +691,7 @@ def test_remote_rpc_error_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(BridgeRemoteError, match="operation failed"):
         client.reset()
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
 
     client.close()
 

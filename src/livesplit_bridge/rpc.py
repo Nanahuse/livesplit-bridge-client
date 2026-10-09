@@ -26,6 +26,10 @@ class BridgeResyncRequiredError(BridgeClientError):
     """Raised when cached client state may be stale and needs a full synchronize()."""
 
 
+class BridgeReconnectRequiredError(BridgeResyncRequiredError):
+    """Raised when RPC and Events may belong to different runtime sessions."""
+
+
 class BridgeRemoteError(BridgeClientError):
     """Raised when the Bridge returns a structured error."""
 
@@ -105,12 +109,12 @@ class BridgeRpcClient:
         self.close()
 
     def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
+        self.session_change = None
         if self._closed or self._socket is None:
             raise BridgeClientError("Client is closed")
         if not isinstance(request, bridge_pb2.Request):
             raise TypeError("request must be a bridge_pb2.Request")
 
-        self.session_change = None
         request_id = self._next_request_id
         self._next_request_id += 1
         request.protocol_version = PROTOCOL_VERSION
@@ -158,14 +162,8 @@ class BridgeRpcClient:
             )
         if response.session_id == 0:
             raise BridgeProtocolError("Bridge returned an invalid zero session ID")
-        previous_session_id = self.session_id
-        self.session_id = int(response.session_id)
-        self.session_change = (
-            (previous_session_id, self.session_id)
-            if previous_session_id not in (0, self.session_id)
-            else None
-        )
         if response.HasField("error"):
+            self._commit_session(response.session_id)
             raise BridgeRemoteError(response.error.code, response.error.message)
         expected_body = {
             "get_timer_state": "get_timer_state",
@@ -181,7 +179,18 @@ class BridgeRpcClient:
             raise BridgeProtocolError(
                 f"Response body mismatch: expected {expected_body!r}, got {actual_body!r}"
             )
+        self._commit_session(response.session_id)
         return response
+
+    def _commit_session(self, new_session_id: int) -> None:
+        previous_session_id = self.session_id
+        committed_session_id = int(new_session_id)
+        self.session_change = (
+            (previous_session_id, committed_session_id)
+            if previous_session_id not in (0, committed_session_id)
+            else None
+        )
+        self.session_id = committed_session_id
 
     def get_timer_state(self) -> common_pb2.TimerState:
         response = self.request(

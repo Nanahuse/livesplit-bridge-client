@@ -3,6 +3,7 @@ from typing import assert_type
 from livesplit_bridge import (
     BridgeClient,
     BridgeEventSubscriber,
+    BridgeRecoveryState,
     BridgeRpcClient,
     BridgeSyncState,
     bridge_pb2,
@@ -33,6 +34,7 @@ def check_bridge_client_types(client: BridgeClient, request: bridge_pb2.Request)
     assert_type(client.events, BridgeEventSubscriber)
     assert_type(client.request(request), bridge_pb2.Response)
     assert_type(client.session_id, int)
+    assert_type(client.recovery_state, BridgeRecoveryState)
     assert_type(client.get_timer_state(), common_pb2.TimerState)
     assert_type(client.get_run(), run_pb2.RunState)
     assert_type(client.get_attempt(), common_pb2.AttemptState)
