@@ -28,6 +28,12 @@ from livesplit_bridge import rpc as rpc_module
 from .test_rpc import FakeConnections, FakeWebSocket, encoded_response
 
 
+class CloseFailingWebSocket(FakeWebSocket):
+    def close(self) -> None:
+        super().close()
+        raise RuntimeError("close failed")
+
+
 def synchronization_responses(session_id: int = 42, *, start_request_id: int = 1) -> list[bytes]:
     return [
         encoded_response(
@@ -159,12 +165,14 @@ def test_reconnect_synchronizes_before_replacing_both_connections(
     next_event = common_pb2.BridgeEvent(
         session_id=42, event_sequence=900, type=common_pb2.EVENT_RUN_CHANGED
     )
-    old_events = FakeWebSocket([previous_event.SerializeToString()])
-    old_rpc = FakeWebSocket()
+    old_events = CloseFailingWebSocket([previous_event.SerializeToString()])
+    old_rpc = CloseFailingWebSocket()
     new_events = FakeWebSocket([next_event.SerializeToString()])
     new_rpc = FakeWebSocket(synchronization_responses())
     connections = install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
     client = BridgeClient()
+    previous_events_client = client.events
+    previous_rpc_client = client.rpc
 
     assert client.receive() == previous_event
     state = client.reconnect()
@@ -182,6 +190,8 @@ def test_reconnect_synchronizes_before_replacing_both_connections(
     assert old_rpc.closed
     assert not new_events.closed
     assert not new_rpc.closed
+    assert client.events is not previous_events_client
+    assert client.rpc is not previous_rpc_client
     assert len(new_rpc.sent) == 4
     assert client.receive() == next_event
     client.close()
@@ -192,7 +202,7 @@ def test_reconnect_keeps_old_connections_if_new_rpc_fails(
 ) -> None:
     old_events = FakeWebSocket()
     old_rpc = FakeWebSocket()
-    new_events = FakeWebSocket()
+    new_events = CloseFailingWebSocket()
     install(
         monkeypatch,
         old_events,
@@ -223,9 +233,11 @@ def test_reconnect_keeps_old_connections_if_synchronize_fails(
         session_id=77,
         get_run=bridge_pb2.GetRunResponse(run=run_pb2.RunState()),
     )
-    new_rpc = FakeWebSocket(inconsistent)
+    new_rpc = CloseFailingWebSocket(inconsistent)
     install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
     client = BridgeClient()
+    previous_events_client = client.events
+    previous_rpc_client = client.rpc
 
     with pytest.raises(BridgeReconnectRequiredError, match="changed during synchronize"):
         client.reconnect()
@@ -234,6 +246,8 @@ def test_reconnect_keeps_old_connections_if_synchronize_fails(
     assert not old_rpc.closed
     assert new_events.closed
     assert new_rpc.closed
+    assert client.events is previous_events_client
+    assert client.rpc is previous_rpc_client
     client.close()
 
 

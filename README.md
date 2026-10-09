@@ -66,7 +66,8 @@ sessionから返った場合だけ`BridgeSyncState`を返します。`completed_
 
 `start()`、`split()`、`skip()`、`undo()`、`reset()`、`pause()`、`resume()`と、
 Game Time操作は空の`OperationResponse`を返します。Bridgeが返す操作エラーやprotocol errorは
-`BridgeRemoteError`として通知されます。成功時のTimerStateが必要な場合は
+`BridgeError`なら`BridgeRemoteError`、不正なprotobuf・protocol envelope違反・response body不一致なら
+`BridgeProtocolError`として通知されます。成功時のTimerStateが必要な場合は
 `get_timer_state()`を呼び出してください。
 
 このclientはState cacheや自動再取得を行いません。`EVENT_TIMER_*`を受けたら必要なQueryを

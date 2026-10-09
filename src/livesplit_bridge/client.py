@@ -124,12 +124,13 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def _close_connections(
         events: BridgeEventSubscriber | None, rpc: BridgeRpcClient | None
     ) -> None:
-        try:
-            if events is not None:
-                events.close()
-        finally:
-            if rpc is not None:
-                rpc.close()
+        for connection in (events, rpc):
+            if connection is None:
+                continue
+            try:
+                connection.close()
+            except Exception:
+                pass
 
     def _ensure_open(self) -> None:
         if self._closed:
