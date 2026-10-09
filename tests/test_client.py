@@ -281,6 +281,31 @@ def test_synchronize_does_not_return_partial_state_on_session_change(
     client.close()
 
 
+def test_synchronize_error_response_on_new_session_requires_resync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rpc_socket = FakeWebSocket(
+        [
+            *synchronization_responses()[:2],
+            encoded_response(
+                3,
+                session_id=77,
+                error=common_pb2.BridgeError(
+                    code=common_pb2.OPERATION_FAILED,
+                    message="runtime changed",
+                ),
+            ),
+        ]
+    )
+    install(monkeypatch, FakeWebSocket(), rpc_socket)
+    client = BridgeClient()
+
+    with pytest.raises(BridgeResyncRequiredError, match="changed during synchronize"):
+        client.synchronize()
+
+    client.close()
+
+
 def test_synchronize_resets_event_sequence_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

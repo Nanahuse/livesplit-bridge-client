@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import NoReturn, Self
+from typing import NoReturn, Self, TypeVar
 
 from .events import DEFAULT_EVENT_ENDPOINT, BridgeEventSubscriber
 from .protocol import bridge_pb2, common_pb2, run_pb2
@@ -13,6 +13,8 @@ from .rpc import (
     BridgeResyncRequiredError,
     BridgeRpcClient,
 )
+
+_QueryResult = TypeVar("_QueryResult")
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,22 +30,36 @@ class BridgeSyncState:
 
 
 def _synchronize_rpc(rpc: BridgeRpcClient, *, include_completed_count: bool) -> BridgeSyncState:
-    timer_state = rpc.get_timer_state()
-    timer_session = rpc.session_id
-    attempt = rpc.get_attempt()
-    attempt_session = rpc.session_id
-    run = rpc.get_run()
-    run_session = rpc.session_id
-    context_state = rpc.get_context_state()
-    context_session = rpc.session_id
-    completed_count = rpc.get_completed_count() if include_completed_count else None
-    sessions = [timer_session, attempt_session, run_session, context_session]
-    if include_completed_count:
-        sessions.append(rpc.session_id)
-    if not sessions or sessions[0] == 0 or any(s != sessions[0] for s in sessions):
-        raise BridgeResyncRequiredError(f"RPC session changed during synchronize(): {sessions}")
+    session_id = 0
+
+    def query(method: Callable[[], _QueryResult]) -> _QueryResult:
+        nonlocal session_id
+        try:
+            result = method()
+        except Exception as error:
+            current_session_id = rpc.session_id
+            if session_id and current_session_id not in (0, session_id):
+                raise BridgeResyncRequiredError(
+                    "RPC session changed during synchronize()"
+                ) from error
+            raise
+        current_session_id = rpc.session_id
+        if session_id and current_session_id != session_id:
+            raise BridgeResyncRequiredError(
+                f"RPC session changed during synchronize(): {session_id} to {current_session_id}"
+            )
+        session_id = current_session_id
+        return result
+
+    timer_state = query(rpc.get_timer_state)
+    attempt = query(rpc.get_attempt)
+    run = query(rpc.get_run)
+    context_state = query(rpc.get_context_state)
+    completed_count = query(rpc.get_completed_count) if include_completed_count else None
+    if session_id == 0:
+        raise BridgeResyncRequiredError("synchronize() did not receive a valid session")
     return BridgeSyncState(
-        session_id=sessions[0],
+        session_id=session_id,
         timer_state=timer_state,
         attempt=attempt,
         run=run,
