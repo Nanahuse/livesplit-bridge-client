@@ -212,6 +212,9 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         try:
             response = rpc.request(request)
         except Exception:
+            if rpc.transport_reset:
+                self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
+                raise
             self._observe_rpc_session()
             raise
         self._observe_rpc_session()
@@ -302,6 +305,11 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             state = _synchronize_rpc(self.rpc, include_completed_count=include_completed_count)
         except BridgeReconnectRequiredError:
             self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
+            raise
+        except Exception:
+            if self.rpc.transport_reset:
+                self._recovery_state = BridgeRecoveryState.RECONNECT_REQUIRED
+                raise
             raise
         if previous_session_id and previous_session_id != state.session_id:
             self._raise_reconnect(

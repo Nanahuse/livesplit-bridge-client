@@ -60,6 +60,7 @@ class BridgeRpcClient:
         self._next_request_id = 1
         self.session_id: int = 0
         self.session_change: tuple[int, int] | None = None
+        self.transport_reset = False
         self._closed = False
         self._connect()
 
@@ -110,6 +111,7 @@ class BridgeRpcClient:
 
     def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
         self.session_change = None
+        self.transport_reset = False
         if self._closed or self._socket is None:
             raise BridgeClientError("Client is closed")
         if not isinstance(request, bridge_pb2.Request):
@@ -126,16 +128,19 @@ class BridgeRpcClient:
             socket.send_binary(request.SerializeToString())
             payload = socket.recv()
         except websocket.WebSocketTimeoutException as error:
+            self.transport_reset = True
             self._reset_socket()
             raise BridgeResponseTimeoutError(
                 f"No Bridge response within {self.response_timeout_ms} ms ({self.rpc_endpoint})"
             ) from error
         except (websocket.WebSocketConnectionClosedException, OSError) as error:
+            self.transport_reset = True
             self._reset_socket()
             raise BridgeClientError(
                 f"RPC connection closed by Bridge ({self.rpc_endpoint})"
             ) from error
         except websocket.WebSocketException as error:
+            self.transport_reset = True
             self._reset_socket()
             raise BridgeClientError(f"RPC failed: {error} ({self.rpc_endpoint})") from error
 

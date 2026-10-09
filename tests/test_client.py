@@ -486,30 +486,77 @@ def test_rpc_session_change_requires_reconnect_before_more_queries(
     client.close()
 
 
+def test_initial_malformed_rpc_response_preserves_protocol_error_and_healthy_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    rpc_socket = FakeWebSocket([b"\xff"])
+    install(monkeypatch, FakeWebSocket(), rpc_socket)
+    client = BridgeClient()
+
+    with pytest.raises(BridgeProtocolError):
+        client.get_timer_state()
+
+    assert client.recovery_state is BridgeRecoveryState.HEALTHY
+    client.close()
+
+
 @pytest.mark.parametrize(
-    ("rpc_socket", "expected_error"),
+    ("failed_socket", "expected_error"),
     [
         (FakeWebSocket(timeout=True), BridgeResponseTimeoutError),
         (
             FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")]),
             BridgeClientError,
         ),
-        (FakeWebSocket([b"\xff"]), BridgeProtocolError),
+        (FakeWebSocket([websocket.WebSocketException("transport error")]), BridgeClientError),
     ],
 )
-def test_initial_rpc_failures_preserve_original_exception_and_healthy_state(
+def test_initial_rpc_transport_reset_requires_reconnect_and_preserves_error(
     monkeypatch: pytest.MonkeyPatch,
-    rpc_socket: FakeWebSocket,
+    failed_socket: FakeWebSocket,
     expected_error: type[Exception],
 ) -> None:
     replacement = FakeWebSocket()
-    install(monkeypatch, FakeWebSocket(), rpc_socket, replacement)
+    new_rpc = FakeWebSocket(
+        synchronization_responses(99)
+        + [
+            encoded_response(5, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse()),
+            encoded_response(6, session_id=99, operation=common_pb2.OperationResponse()),
+        ]
+    )
+    install(
+        monkeypatch,
+        FakeWebSocket(),
+        failed_socket,
+        replacement,
+        FakeWebSocket(),
+        new_rpc,
+    )
     client = BridgeClient()
 
     with pytest.raises(expected_error):
-        client.get_timer_state()
+        client.split()
 
+    assert client.recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED
+    assert len(failed_socket.sent) == 1
+    assert replacement.sent == []
+    for operation in (
+        client.get_timer_state,
+        client.split,
+        lambda: client.receive(timeout_ms=0),
+        client.synchronize,
+    ):
+        with pytest.raises(BridgeReconnectRequiredError):
+            operation()
+    assert replacement.sent == []
+
+    state = client.reconnect()
+    assert state.session_id == 99
     assert client.recovery_state is BridgeRecoveryState.HEALTHY
+    assert client.get_timer_state() == common_pb2.TimerState()
+    assert not client.split().ListFields()
+    assert len(new_rpc.sent) == 6
     client.close()
 
 
