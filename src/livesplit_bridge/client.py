@@ -23,20 +23,15 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         event_endpoint: str = DEFAULT_EVENT_ENDPOINT,
         *,
         response_timeout_ms: int = 3000,
-        heartbeat_timeout_ms: int | None = None,
     ) -> None:
         self._rpc_endpoint = rpc_endpoint
         self._event_endpoint = event_endpoint
         self._response_timeout_ms = response_timeout_ms
-        self._heartbeat_timeout_ms = heartbeat_timeout_ms
         self._closed = False
         self._rpc: BridgeRpcClient | None = None
         self._events: BridgeEventSubscriber | None = None
         try:
-            self._events = BridgeEventSubscriber(
-                event_endpoint,
-                heartbeat_timeout_ms=heartbeat_timeout_ms,
-            )
+            self._events = BridgeEventSubscriber(event_endpoint)
             self._rpc = BridgeRpcClient(
                 rpc_endpoint,
                 response_timeout_ms=response_timeout_ms,
@@ -72,6 +67,11 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         assert events is not None
         return events
 
+    @property
+    def session_id(self) -> int:
+        """Session ID from the most recent RPC response, or zero before the first RPC."""
+        return self.rpc.session_id
+
     def close(self) -> None:
         if self._closed:
             return
@@ -97,9 +97,6 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
         return self.rpc.request(request)
 
-    def attach(self) -> bridge_pb2.AttachResponse:
-        return self.rpc.attach()
-
     def get_timer_state(self) -> common_pb2.TimerState:
         return self.rpc.get_timer_state()
 
@@ -109,8 +106,11 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def get_attempt(self) -> common_pb2.AttemptState:
         return self.rpc.get_attempt()
 
-    def get_runtime_state(self) -> common_pb2.RuntimeState:
-        return self.rpc.get_runtime_state()
+    def get_context_state(self) -> common_pb2.ContextState:
+        return self.rpc.get_context_state()
+
+    def get_completed_count(self) -> common_pb2.CompletedCount:
+        return self.rpc.get_completed_count()
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType
@@ -164,34 +164,29 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def __next__(self) -> common_pb2.BridgeEvent:
         return next(self.events)
 
-    def reconnect(self) -> bridge_pb2.AttachResponse:
+    def reconnect(self) -> None:
         """Recreate the subscriber and RPC client on fresh WebSocket connections.
 
-        A new subscriber is created first, then a new RPC client. The new RPC client
-        calls ``attach()`` before the new resources replace the current ones. On any
-        failure the new resources are closed and the old resources are kept, so the
+        A new subscriber is created first, then a new RPC client. On any failure the
+        new resources are closed and the old resources are kept, so the
         caller can retry. After a successful switch the old subscriber and RPC client are
         closed (old events first, then old RPC); even if closing an old resource raises,
         the new resources remain current.
 
         This operation is not atomic across the event and RPC connections: the event
-        WebSocket is connected before ``attach()`` completes, so event gaps or duplicates
-        are not prevented, and the returned ``AttachResponse`` and subsequent events are
-        not ordered relative to each other. Use ``session_id`` and ``event_sequence`` to
-        reconcile on the caller side if required.
+        WebSocket is connected before the next RPC completes, so event gaps or duplicates
+        are not prevented, and the next response and subsequent events are not ordered
+        relative to each other. Use ``session_id`` and ``event_sequence`` to reconcile on
+        the caller side if required.
         """
         self._ensure_open()
-        new_events = BridgeEventSubscriber(
-            self._event_endpoint,
-            heartbeat_timeout_ms=self._heartbeat_timeout_ms,
-        )
+        new_events = BridgeEventSubscriber(self._event_endpoint)
         new_rpc: BridgeRpcClient | None = None
         try:
             new_rpc = BridgeRpcClient(
                 self._rpc_endpoint,
                 response_timeout_ms=self._response_timeout_ms,
             )
-            attached = new_rpc.attach()
         except Exception:
             try:
                 if new_rpc is not None:
@@ -210,4 +205,3 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         finally:
             if old_rpc is not None:
                 old_rpc.close()
-        return attached

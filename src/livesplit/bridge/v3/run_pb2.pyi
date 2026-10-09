@@ -1,4 +1,4 @@
-from livesplit.bridge.v2 import common_pb2 as _common_pb2
+from livesplit.bridge.v3 import common_pb2 as _common_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
@@ -8,9 +8,7 @@ from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class RunState(_message.Message):
-    __slots__ = ("session_id", "run_revision", "game_name", "category_name", "offset_ticks", "file_path", "layout_path", "metadata", "comparisons", "segments", "game_icon")
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
-    RUN_REVISION_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("game_name", "category_name", "offset_ticks", "file_path", "layout_path", "metadata", "comparisons", "segments", "game_icon")
     GAME_NAME_FIELD_NUMBER: _ClassVar[int]
     CATEGORY_NAME_FIELD_NUMBER: _ClassVar[int]
     OFFSET_TICKS_FIELD_NUMBER: _ClassVar[int]
@@ -20,8 +18,6 @@ class RunState(_message.Message):
     COMPARISONS_FIELD_NUMBER: _ClassVar[int]
     SEGMENTS_FIELD_NUMBER: _ClassVar[int]
     GAME_ICON_FIELD_NUMBER: _ClassVar[int]
-    session_id: int
-    run_revision: int
     game_name: str
     category_name: str
     offset_ticks: int
@@ -31,7 +27,7 @@ class RunState(_message.Message):
     comparisons: _containers.RepeatedScalarFieldContainer[str]
     segments: _containers.RepeatedCompositeFieldContainer[SegmentInfo]
     game_icon: Image
-    def __init__(self, session_id: _Optional[int] = ..., run_revision: _Optional[int] = ..., game_name: _Optional[str] = ..., category_name: _Optional[str] = ..., offset_ticks: _Optional[int] = ..., file_path: _Optional[str] = ..., layout_path: _Optional[str] = ..., metadata: _Optional[_Union[RunMetadata, _Mapping]] = ..., comparisons: _Optional[_Iterable[str]] = ..., segments: _Optional[_Iterable[_Union[SegmentInfo, _Mapping]]] = ..., game_icon: _Optional[_Union[Image, _Mapping]] = ...) -> None: ...
+    def __init__(self, game_name: _Optional[str] = ..., category_name: _Optional[str] = ..., offset_ticks: _Optional[int] = ..., file_path: _Optional[str] = ..., layout_path: _Optional[str] = ..., metadata: _Optional[_Union[RunMetadata, _Mapping]] = ..., comparisons: _Optional[_Iterable[str]] = ..., segments: _Optional[_Iterable[_Union[SegmentInfo, _Mapping]]] = ..., game_icon: _Optional[_Union[Image, _Mapping]] = ...) -> None: ...
 
 class SegmentInfo(_message.Message):
     __slots__ = ("index", "name", "comparisons", "best_segment_time", "icon")

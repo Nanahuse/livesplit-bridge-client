@@ -11,7 +11,6 @@ class TimerPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     TIMER_PHASE_UNSPECIFIED: _ClassVar[TimerPhase]
     NOT_RUNNING: _ClassVar[TimerPhase]
-    STARTING: _ClassVar[TimerPhase]
     RUNNING: _ClassVar[TimerPhase]
     PAUSED: _ClassVar[TimerPhase]
     ENDED: _ClassVar[TimerPhase]
@@ -49,18 +48,20 @@ class BridgeEventType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     EVENT_TIMER_SKIPPED: _ClassVar[BridgeEventType]
     EVENT_TIMER_UNDO: _ClassVar[BridgeEventType]
     EVENT_TIMER_RESET: _ClassVar[BridgeEventType]
-    EVENT_TIMER_PAUSED: _ClassVar[BridgeEventType]
-    EVENT_TIMER_RESUMED: _ClassVar[BridgeEventType]
-    EVENT_GAME_TIME_INITIALIZED: _ClassVar[BridgeEventType]
-    EVENT_GAME_TIME_SET: _ClassVar[BridgeEventType]
-    EVENT_GAME_TIME_PAUSED: _ClassVar[BridgeEventType]
-    EVENT_GAME_TIME_RESUMED: _ClassVar[BridgeEventType]
+    EVENT_TIMER_PHASE_CHANGED: _ClassVar[BridgeEventType]
     EVENT_RUN_CHANGED: _ClassVar[BridgeEventType]
-    EVENT_RUNTIME_CHANGED: _ClassVar[BridgeEventType]
-    EVENT_HEARTBEAT: _ClassVar[BridgeEventType]
+    EVENT_CONTEXT_CHANGED: _ClassVar[BridgeEventType]
+
+class BridgeErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    BRIDGE_ERROR_CODE_UNSPECIFIED: _ClassVar[BridgeErrorCode]
+    UNSUPPORTED_PROTOCOL_VERSION: _ClassVar[BridgeErrorCode]
+    INVALID_REQUEST: _ClassVar[BridgeErrorCode]
+    INVALID_ARGUMENT: _ClassVar[BridgeErrorCode]
+    OPERATION_FAILED: _ClassVar[BridgeErrorCode]
+    INTERNAL_ERROR: _ClassVar[BridgeErrorCode]
 TIMER_PHASE_UNSPECIFIED: TimerPhase
 NOT_RUNNING: TimerPhase
-STARTING: TimerPhase
 RUNNING: TimerPhase
 PAUSED: TimerPhase
 ENDED: TimerPhase
@@ -86,15 +87,15 @@ EVENT_TIMER_SPLIT: BridgeEventType
 EVENT_TIMER_SKIPPED: BridgeEventType
 EVENT_TIMER_UNDO: BridgeEventType
 EVENT_TIMER_RESET: BridgeEventType
-EVENT_TIMER_PAUSED: BridgeEventType
-EVENT_TIMER_RESUMED: BridgeEventType
-EVENT_GAME_TIME_INITIALIZED: BridgeEventType
-EVENT_GAME_TIME_SET: BridgeEventType
-EVENT_GAME_TIME_PAUSED: BridgeEventType
-EVENT_GAME_TIME_RESUMED: BridgeEventType
+EVENT_TIMER_PHASE_CHANGED: BridgeEventType
 EVENT_RUN_CHANGED: BridgeEventType
-EVENT_RUNTIME_CHANGED: BridgeEventType
-EVENT_HEARTBEAT: BridgeEventType
+EVENT_CONTEXT_CHANGED: BridgeEventType
+BRIDGE_ERROR_CODE_UNSPECIFIED: BridgeErrorCode
+UNSUPPORTED_PROTOCOL_VERSION: BridgeErrorCode
+INVALID_REQUEST: BridgeErrorCode
+INVALID_ARGUMENT: BridgeErrorCode
+OPERATION_FAILED: BridgeErrorCode
+INTERNAL_ERROR: BridgeErrorCode
 
 class TimeValue(_message.Message):
     __slots__ = ("real_time_ticks", "game_time_ticks")
@@ -105,44 +106,28 @@ class TimeValue(_message.Message):
     def __init__(self, real_time_ticks: _Optional[int] = ..., game_time_ticks: _Optional[int] = ...) -> None: ...
 
 class TimerState(_message.Message):
-    __slots__ = ("session_id", "state_revision", "phase", "split_index", "real_time_ticks", "game_time_ticks", "is_game_time_initialized", "is_game_time_paused", "run_revision", "attempt_revision", "runtime_revision")
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
-    STATE_REVISION_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("phase", "split_index", "real_time_ticks", "game_time_ticks", "is_game_time_initialized", "is_game_time_paused")
     PHASE_FIELD_NUMBER: _ClassVar[int]
     SPLIT_INDEX_FIELD_NUMBER: _ClassVar[int]
     REAL_TIME_TICKS_FIELD_NUMBER: _ClassVar[int]
     GAME_TIME_TICKS_FIELD_NUMBER: _ClassVar[int]
     IS_GAME_TIME_INITIALIZED_FIELD_NUMBER: _ClassVar[int]
     IS_GAME_TIME_PAUSED_FIELD_NUMBER: _ClassVar[int]
-    RUN_REVISION_FIELD_NUMBER: _ClassVar[int]
-    ATTEMPT_REVISION_FIELD_NUMBER: _ClassVar[int]
-    RUNTIME_REVISION_FIELD_NUMBER: _ClassVar[int]
-    session_id: int
-    state_revision: int
     phase: TimerPhase
     split_index: int
     real_time_ticks: int
     game_time_ticks: int
     is_game_time_initialized: bool
     is_game_time_paused: bool
-    run_revision: int
-    attempt_revision: int
-    runtime_revision: int
-    def __init__(self, session_id: _Optional[int] = ..., state_revision: _Optional[int] = ..., phase: _Optional[_Union[TimerPhase, str]] = ..., split_index: _Optional[int] = ..., real_time_ticks: _Optional[int] = ..., game_time_ticks: _Optional[int] = ..., is_game_time_initialized: bool = ..., is_game_time_paused: bool = ..., run_revision: _Optional[int] = ..., attempt_revision: _Optional[int] = ..., runtime_revision: _Optional[int] = ...) -> None: ...
+    def __init__(self, phase: _Optional[_Union[TimerPhase, str]] = ..., split_index: _Optional[int] = ..., real_time_ticks: _Optional[int] = ..., game_time_ticks: _Optional[int] = ..., is_game_time_initialized: bool = ..., is_game_time_paused: bool = ...) -> None: ...
 
 class AttemptState(_message.Message):
-    __slots__ = ("session_id", "attempt_revision", "attempt_count", "completed_count", "segments")
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
-    ATTEMPT_REVISION_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("attempt_count", "segments")
     ATTEMPT_COUNT_FIELD_NUMBER: _ClassVar[int]
-    COMPLETED_COUNT_FIELD_NUMBER: _ClassVar[int]
     SEGMENTS_FIELD_NUMBER: _ClassVar[int]
-    session_id: int
-    attempt_revision: int
     attempt_count: int
-    completed_count: int
     segments: _containers.RepeatedCompositeFieldContainer[AttemptSegment]
-    def __init__(self, session_id: _Optional[int] = ..., attempt_revision: _Optional[int] = ..., attempt_count: _Optional[int] = ..., completed_count: _Optional[int] = ..., segments: _Optional[_Iterable[_Union[AttemptSegment, _Mapping]]] = ...) -> None: ...
+    def __init__(self, attempt_count: _Optional[int] = ..., segments: _Optional[_Iterable[_Union[AttemptSegment, _Mapping]]] = ...) -> None: ...
 
 class AttemptSegment(_message.Message):
     __slots__ = ("index", "split_time", "custom_variables")
@@ -161,8 +146,14 @@ class AttemptSegment(_message.Message):
     custom_variables: _containers.ScalarMap[str, str]
     def __init__(self, index: _Optional[int] = ..., split_time: _Optional[_Union[TimeValue, _Mapping]] = ..., custom_variables: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
-class RuntimeState(_message.Message):
-    __slots__ = ("session_id", "runtime_revision", "current_timing_method", "current_comparison", "global_hotkeys_enabled", "custom_variables")
+class CompletedCount(_message.Message):
+    __slots__ = ("completed_count",)
+    COMPLETED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    completed_count: int
+    def __init__(self, completed_count: _Optional[int] = ...) -> None: ...
+
+class ContextState(_message.Message):
+    __slots__ = ("current_timing_method", "current_comparison", "custom_variables")
     class CustomVariablesEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -170,37 +161,25 @@ class RuntimeState(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
-    RUNTIME_REVISION_FIELD_NUMBER: _ClassVar[int]
     CURRENT_TIMING_METHOD_FIELD_NUMBER: _ClassVar[int]
     CURRENT_COMPARISON_FIELD_NUMBER: _ClassVar[int]
-    GLOBAL_HOTKEYS_ENABLED_FIELD_NUMBER: _ClassVar[int]
     CUSTOM_VARIABLES_FIELD_NUMBER: _ClassVar[int]
-    session_id: int
-    runtime_revision: int
     current_timing_method: TimingMethod
     current_comparison: str
-    global_hotkeys_enabled: bool
     custom_variables: _containers.ScalarMap[str, str]
-    def __init__(self, session_id: _Optional[int] = ..., runtime_revision: _Optional[int] = ..., current_timing_method: _Optional[_Union[TimingMethod, str]] = ..., current_comparison: _Optional[str] = ..., global_hotkeys_enabled: bool = ..., custom_variables: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    def __init__(self, current_timing_method: _Optional[_Union[TimingMethod, str]] = ..., current_comparison: _Optional[str] = ..., custom_variables: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class OperationResponse(_message.Message):
-    __slots__ = ("success", "message", "timer_state")
-    SUCCESS_FIELD_NUMBER: _ClassVar[int]
-    MESSAGE_FIELD_NUMBER: _ClassVar[int]
-    TIMER_STATE_FIELD_NUMBER: _ClassVar[int]
-    success: bool
-    message: str
-    timer_state: TimerState
-    def __init__(self, success: bool = ..., message: _Optional[str] = ..., timer_state: _Optional[_Union[TimerState, _Mapping]] = ...) -> None: ...
+    __slots__ = ()
+    def __init__(self) -> None: ...
 
 class BridgeError(_message.Message):
     __slots__ = ("code", "message")
     CODE_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
-    code: int
+    code: BridgeErrorCode
     message: str
-    def __init__(self, code: _Optional[int] = ..., message: _Optional[str] = ...) -> None: ...
+    def __init__(self, code: _Optional[_Union[BridgeErrorCode, str]] = ..., message: _Optional[str] = ...) -> None: ...
 
 class BridgeEvent(_message.Message):
     __slots__ = ("session_id", "event_sequence", "type", "timer_state")

@@ -6,8 +6,8 @@ import websocket
 
 from .protocol import bridge_pb2, common_pb2, run_pb2
 
-DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v2/rpc"
-PROTOCOL_VERSION = 2
+DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v3/rpc"
+PROTOCOL_VERSION = 3
 
 
 class BridgeClientError(RuntimeError):
@@ -50,6 +50,7 @@ class BridgeRpcClient:
         self.response_timeout_ms = response_timeout_ms
         self._socket: Any | None = None
         self._next_request_id = 1
+        self.session_id: int = 0
         self._closed = False
         self._connect()
 
@@ -151,11 +152,8 @@ class BridgeRpcClient:
             )
         if response.HasField("error"):
             raise BridgeRemoteError(response.error.code, response.error.message)
+        self.session_id = int(response.session_id)
         return response
-
-    def attach(self) -> bridge_pb2.AttachResponse:
-        response = self.request(bridge_pb2.Request(attach=bridge_pb2.AttachRequest()))
-        return response.attach
 
     def get_timer_state(self) -> common_pb2.TimerState:
         response = self.request(
@@ -171,11 +169,17 @@ class BridgeRpcClient:
         response = self.request(bridge_pb2.Request(get_attempt=bridge_pb2.GetAttemptRequest()))
         return response.get_attempt.attempt
 
-    def get_runtime_state(self) -> common_pb2.RuntimeState:
+    def get_context_state(self) -> common_pb2.ContextState:
         response = self.request(
-            bridge_pb2.Request(get_runtime_state=bridge_pb2.GetRuntimeStateRequest())
+            bridge_pb2.Request(get_context_state=bridge_pb2.GetContextStateRequest())
         )
-        return response.get_runtime_state.runtime_state
+        return response.get_context_state.context_state
+
+    def get_completed_count(self) -> common_pb2.CompletedCount:
+        response = self.request(
+            bridge_pb2.Request(get_completed_count=bridge_pb2.GetCompletedCountRequest())
+        )
+        return response.get_completed_count.completed_count
 
     def timer_operation(
         self, operation: common_pb2.TimerOperationType
