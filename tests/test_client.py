@@ -22,7 +22,12 @@ from livesplit_bridge import (
 from livesplit_bridge import events as events_module
 from livesplit_bridge import rpc as rpc_module
 
-from .test_rpc import FakeConnections, FakeWebSocket, encoded_response
+from .support import (
+    FakeConnections,
+    FakeWebSocket,
+    RequestAwareBridgeSocket,
+    response_scenario,
+)
 
 
 class CloseFailingWebSocket(FakeWebSocket):
@@ -31,74 +36,10 @@ class CloseFailingWebSocket(FakeWebSocket):
         raise RuntimeError("close failed")
 
 
-class BridgeRespondingWebSocket(FakeWebSocket):
-    def __init__(self, session_id: int = 42, completed_count: int = 9) -> None:
-        super().__init__()
-        self.session_id = session_id
-        self.completed_count = completed_count
-
-    def send_binary(self, payload: bytes) -> None:
-        super().send_binary(payload)
-        request = bridge_pb2.Request.FromString(payload)
-        request_body = request.WhichOneof("body")
-        response = bridge_pb2.Response(
-            protocol_version=3,
-            request_id=request.request_id,
-            session_id=self.session_id,
-        )
-        response_fields = {
-            "get_timer_state": bridge_pb2.GetTimerStateResponse(
-                timer_state=common_pb2.TimerState(phase=common_pb2.NOT_RUNNING)
-            ),
-            "get_attempt": bridge_pb2.GetAttemptResponse(
-                attempt=common_pb2.AttemptState(attempt_count=4)
-            ),
-            "get_run": bridge_pb2.GetRunResponse(run=run_pb2.RunState(game_name="Game")),
-            "get_context_state": bridge_pb2.GetContextStateResponse(
-                context_state=common_pb2.ContextState(current_comparison="Personal Best")
-            ),
-            "get_completed_count": bridge_pb2.GetCompletedCountResponse(
-                completed_count=common_pb2.CompletedCount(completed_count=self.completed_count)
-            ),
-        }
-        if request_body in response_fields:
-            getattr(response, request_body).CopyFrom(response_fields[request_body])
-        elif request_body in ("timer_operation", "game_time_operation"):
-            response.operation.SetInParent()
-        else:
-            raise AssertionError(f"Unexpected Bridge request: {request_body}")
-        self.messages.append(response.SerializeToString())
-
-
-def synchronization_responses(session_id: int = 42, *, start_request_id: int = 1) -> list[bytes]:
-    return [
-        encoded_response(
-            start_request_id,
-            session_id=session_id,
-            get_timer_state=bridge_pb2.GetTimerStateResponse(
-                timer_state=common_pb2.TimerState(phase=common_pb2.NOT_RUNNING)
-            ),
-        ),
-        encoded_response(
-            start_request_id + 1,
-            session_id=session_id,
-            get_attempt=bridge_pb2.GetAttemptResponse(
-                attempt=common_pb2.AttemptState(attempt_count=4)
-            ),
-        ),
-        encoded_response(
-            start_request_id + 2,
-            session_id=session_id,
-            get_run=bridge_pb2.GetRunResponse(run=run_pb2.RunState(game_name="Game")),
-        ),
-        encoded_response(
-            start_request_id + 3,
-            session_id=session_id,
-            get_context_state=bridge_pb2.GetContextStateResponse(
-                context_state=common_pb2.ContextState(current_comparison="Personal Best")
-            ),
-        ),
-    ]
+class CloseFailingRequestAwareWebSocket(RequestAwareBridgeSocket):
+    def close(self) -> None:
+        super().close()
+        raise RuntimeError("close failed")
 
 
 def install(
@@ -121,7 +62,7 @@ def test_event_received_during_initial_sync_remains_available(
     install(
         monkeypatch,
         FakeWebSocket([initial_event.SerializeToString()]),
-        BridgeRespondingWebSocket(),
+        RequestAwareBridgeSocket(),
     )
     client = BridgeClient()
 
@@ -140,24 +81,22 @@ def test_query_and_operation_methods_delegate_to_v3_rpc(
     context = common_pb2.ContextState(current_comparison="Personal Best")
     completed = common_pb2.CompletedCount(completed_count=3)
     event_socket = FakeWebSocket()
-    rpc_socket = FakeWebSocket(
-        [
-            encoded_response(
-                1,
-                get_timer_state=bridge_pb2.GetTimerStateResponse(timer_state=timer_state),
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={
+            "get_timer_state": response_scenario(
+                get_timer_state=bridge_pb2.GetTimerStateResponse(timer_state=timer_state)
             ),
-            encoded_response(2, get_run=bridge_pb2.GetRunResponse(run=run_state)),
-            encoded_response(3, get_attempt=bridge_pb2.GetAttemptResponse(attempt=attempt)),
-            encoded_response(
-                4,
-                get_context_state=bridge_pb2.GetContextStateResponse(context_state=context),
+            "get_run": response_scenario(get_run=bridge_pb2.GetRunResponse(run=run_state)),
+            "get_attempt": response_scenario(
+                get_attempt=bridge_pb2.GetAttemptResponse(attempt=attempt)
             ),
-            encoded_response(
-                5,
-                get_completed_count=bridge_pb2.GetCompletedCountResponse(completed_count=completed),
+            "get_context_state": response_scenario(
+                get_context_state=bridge_pb2.GetContextStateResponse(context_state=context)
             ),
-            encoded_response(6, operation=common_pb2.OperationResponse()),
-        ]
+            "get_completed_count": response_scenario(
+                get_completed_count=bridge_pb2.GetCompletedCountResponse(completed_count=completed)
+            ),
+        }
     )
     install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
@@ -170,9 +109,6 @@ def test_query_and_operation_methods_delegate_to_v3_rpc(
     assert client.get_completed_count() == completed
     assert not client.start().ListFields()
 
-    request = bridge_pb2.Request.FromString(rpc_socket.sent[-1])
-    assert request.protocol_version == 3
-    assert request.timer_operation.operation == common_pb2.TIMER_START
     client.close()
 
 
@@ -215,7 +151,7 @@ def test_receive_rejects_timer_event_without_timer_state(
     install(
         monkeypatch,
         FakeWebSocket([event.SerializeToString(), valid_event.SerializeToString()]),
-        BridgeRespondingWebSocket(9),
+        RequestAwareBridgeSocket(9),
     )
     client = BridgeClient()
 
@@ -278,9 +214,7 @@ def test_event_session_mismatch_precedes_missing_timer_payload(
         event_sequence=1,
         type=common_pb2.EVENT_TIMER_SPLIT,
     )
-    rpc_socket = FakeWebSocket(
-        [encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse())]
-    )
+    rpc_socket = RequestAwareBridgeSocket()
     install(monkeypatch, FakeWebSocket([event.SerializeToString()]), rpc_socket)
     client = BridgeClient()
     client.get_timer_state()
@@ -306,7 +240,7 @@ def test_reconnect_returns_state_and_works_after_old_connection_close_errors(
     old_events = CloseFailingWebSocket([previous_event.SerializeToString()])
     old_rpc = CloseFailingWebSocket()
     new_events = FakeWebSocket([next_event.SerializeToString()])
-    new_rpc = BridgeRespondingWebSocket()
+    new_rpc = RequestAwareBridgeSocket()
     install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
     client = BridgeClient()
 
@@ -324,12 +258,12 @@ def test_reconnect_keeps_old_connections_if_new_rpc_fails(
 ) -> None:
     old_events = FakeWebSocket()
     old_timer = common_pb2.TimerState(phase=common_pb2.RUNNING, split_index=2)
-    old_rpc = FakeWebSocket(
-        [
-            encoded_response(
-                1, get_timer_state=bridge_pb2.GetTimerStateResponse(timer_state=old_timer)
+    old_rpc = RequestAwareBridgeSocket(
+        scenarios={
+            "get_timer_state": response_scenario(
+                get_timer_state=bridge_pb2.GetTimerStateResponse(timer_state=old_timer)
             )
-        ]
+        }
     )
     new_events = CloseFailingWebSocket()
     install(
@@ -353,21 +287,23 @@ def test_reconnect_keeps_old_connections_if_synchronize_fails(
 ) -> None:
     old_events = FakeWebSocket()
     old_timer = common_pb2.TimerState(phase=common_pb2.PAUSED, split_index=3)
-    old_rpc = FakeWebSocket(
-        [
-            encoded_response(
-                1, get_timer_state=bridge_pb2.GetTimerStateResponse(timer_state=old_timer)
+    old_rpc = RequestAwareBridgeSocket(
+        scenarios={
+            "get_timer_state": response_scenario(
+                get_timer_state=bridge_pb2.GetTimerStateResponse(timer_state=old_timer)
             )
-        ]
+        }
     )
     new_events = CloseFailingWebSocket()
-    inconsistent = synchronization_responses()
-    inconsistent[2] = encoded_response(
-        3,
-        session_id=77,
-        get_run=bridge_pb2.GetRunResponse(run=run_pb2.RunState()),
+    new_rpc = CloseFailingRequestAwareWebSocket(
+        scenarios={
+            "get_timer_state": response_scenario(
+                get_timer_state=bridge_pb2.GetTimerStateResponse()
+            ),
+            "get_attempt": response_scenario(get_attempt=bridge_pb2.GetAttemptResponse()),
+            "get_run": response_scenario(session_id=77, get_run=bridge_pb2.GetRunResponse()),
+        }
     )
-    new_rpc = CloseFailingWebSocket(inconsistent)
     install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
     client = BridgeClient()
     with pytest.raises(BridgeReconnectRequiredError):
@@ -381,7 +317,7 @@ def test_synchronize_returns_consistent_snapshot_and_optional_completed_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     event_socket = FakeWebSocket()
-    rpc_socket = BridgeRespondingWebSocket()
+    rpc_socket = RequestAwareBridgeSocket()
     install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
 
@@ -401,13 +337,10 @@ def test_synchronize_does_not_return_partial_state_on_session_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     event_socket = FakeWebSocket()
-    responses = synchronization_responses()
-    responses[2] = encoded_response(
-        3,
-        session_id=77,
-        get_run=bridge_pb2.GetRunResponse(run=run_pb2.RunState()),
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={"get_run": response_scenario(session_id=77, get_run=bridge_pb2.GetRunResponse())}
     )
-    install(monkeypatch, event_socket, FakeWebSocket(responses))
+    install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
 
     with pytest.raises(BridgeReconnectRequiredError):
@@ -420,18 +353,15 @@ def test_synchronize_does_not_return_partial_state_on_session_change(
 def test_synchronize_error_response_on_new_session_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rpc_socket = FakeWebSocket(
-        [
-            *synchronization_responses()[:2],
-            encoded_response(
-                3,
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={
+            "get_run": response_scenario(
                 session_id=77,
                 error=common_pb2.BridgeError(
-                    code=common_pb2.OPERATION_FAILED,
-                    message="runtime changed",
+                    code=common_pb2.OPERATION_FAILED, message="runtime changed"
                 ),
-            ),
-        ]
+            )
+        }
     )
     install(monkeypatch, FakeWebSocket(), rpc_socket)
     client = BridgeClient()
@@ -451,7 +381,7 @@ def test_synchronize_resets_event_sequence_baseline(
         for n in (100, 500)
     ]
     event_socket = FakeWebSocket([event.SerializeToString() for event in events])
-    install(monkeypatch, event_socket, BridgeRespondingWebSocket())
+    install(monkeypatch, event_socket, RequestAwareBridgeSocket())
     client = BridgeClient()
 
     assert client.receive() == events[0]
@@ -472,23 +402,16 @@ def test_remote_error_during_sync_preserves_existing_recovery_state(
         common_pb2.BridgeEvent(session_id=42, event_sequence=n, type=common_pb2.EVENT_RUN_CHANGED)
         for n in (10, 12)
     ]
-    responses = [
-        encoded_response(
-            1,
-            session_id=42,
-            get_timer_state=bridge_pb2.GetTimerStateResponse(),
-        ),
-        encoded_response(
-            2,
-            session_id=42,
-            error=common_pb2.BridgeError(
-                code=common_pb2.OPERATION_FAILED,
-                message="query failed",
-            ),
-        ),
-    ]
     event_socket = FakeWebSocket([event.SerializeToString() for event in events])
-    rpc_socket = FakeWebSocket(responses)
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={
+            "get_attempt": response_scenario(
+                error=common_pb2.BridgeError(
+                    code=common_pb2.OPERATION_FAILED, message="query failed"
+                )
+            )
+        }
+    )
     install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
     if initial_state is BridgeRecoveryState.RESYNC_REQUIRED:
@@ -516,15 +439,8 @@ def test_transport_reset_during_synchronize_requires_reconnect(
         for sequence in (57, 60)
     ]
     event_socket = FakeWebSocket([event.SerializeToString() for event in events])
-    rpc_socket = FakeWebSocket(
-        [
-            encoded_response(
-                1,
-                session_id=42,
-                get_timer_state=bridge_pb2.GetTimerStateResponse(),
-            )
-        ],
-        timeout=True,
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={"get_attempt": websocket.WebSocketTimeoutException("timed out")}
     )
     replacement = FakeWebSocket()
     install(monkeypatch, event_socket, rpc_socket, replacement)
@@ -556,15 +472,14 @@ def test_transport_reset_during_synchronize_requires_reconnect(
 def test_sync_session_different_from_known_rpc_session_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    responses = [
-        encoded_response(
-            1,
-            session_id=42,
-            get_timer_state=bridge_pb2.GetTimerStateResponse(),
-        ),
-        *synchronization_responses(99, start_request_id=2),
-    ]
-    install(monkeypatch, FakeWebSocket(), FakeWebSocket(responses))
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={
+            "get_attempt": response_scenario(
+                session_id=99, get_attempt=bridge_pb2.GetAttemptResponse()
+            )
+        }
+    )
+    install(monkeypatch, FakeWebSocket(), rpc_socket)
     client = BridgeClient()
 
     client.get_timer_state()
@@ -582,7 +497,7 @@ def test_sequence_gap_can_recover_with_synchronize_and_new_baseline(
         for n in (57, 60, 900)
     ]
     event_socket = FakeWebSocket([event.SerializeToString() for event in events])
-    rpc_socket = FakeWebSocket(synchronization_responses())
+    rpc_socket = RequestAwareBridgeSocket()
     install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
 
@@ -608,14 +523,12 @@ def test_first_event_can_establish_temporary_session_before_rpc(
         type=common_pb2.EVENT_RUN_CHANGED,
     )
     event_socket = FakeWebSocket([event.SerializeToString()])
-    rpc_socket = FakeWebSocket(
-        [encoded_response(1, get_timer_state=bridge_pb2.GetTimerStateResponse())]
-    )
+    rpc_socket = RequestAwareBridgeSocket()
     install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
 
     assert client.receive() == event
-    assert client.get_timer_state() == common_pb2.TimerState()
+    assert client.get_timer_state().phase == common_pb2.NOT_RUNNING
     client.close()
 
 
@@ -623,14 +536,18 @@ def test_rpc_session_change_requires_reconnect_before_more_queries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     old_events = FakeWebSocket()
-    old_rpc = FakeWebSocket(
-        [
-            encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse()),
-            encoded_response(2, session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse()),
-        ]
+    old_rpc = RequestAwareBridgeSocket(
+        scenarios={
+            "get_timer_state": [
+                response_scenario(get_timer_state=bridge_pb2.GetTimerStateResponse()),
+                response_scenario(
+                    session_id=99, get_timer_state=bridge_pb2.GetTimerStateResponse()
+                ),
+            ]
+        }
     )
     new_events = FakeWebSocket()
-    new_rpc = BridgeRespondingWebSocket(99)
+    new_rpc = RequestAwareBridgeSocket(99)
     install(monkeypatch, old_events, old_rpc, new_events, new_rpc)
     client = BridgeClient()
 
@@ -681,7 +598,7 @@ def test_initial_rpc_transport_reset_requires_reconnect_and_preserves_error(
     expected_error: type[Exception],
 ) -> None:
     replacement = FakeWebSocket()
-    new_rpc = BridgeRespondingWebSocket(99)
+    new_rpc = RequestAwareBridgeSocket(99)
     install(
         monkeypatch,
         FakeWebSocket(),
@@ -719,18 +636,18 @@ def test_initial_rpc_transport_reset_requires_reconnect_and_preserves_error(
 def test_rpc_error_response_session_change_requires_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rpc_socket = FakeWebSocket(
-        [
-            encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse()),
-            encoded_response(
-                2,
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={
+            "get_timer_state": response_scenario(
+                get_timer_state=bridge_pb2.GetTimerStateResponse()
+            ),
+            "timer_operation": response_scenario(
                 session_id=99,
                 error=common_pb2.BridgeError(
-                    code=common_pb2.OPERATION_FAILED,
-                    message="new runtime unavailable",
+                    code=common_pb2.OPERATION_FAILED, message="new runtime unavailable"
                 ),
             ),
-        ]
+        }
     )
     install(monkeypatch, FakeWebSocket(), rpc_socket)
     client = BridgeClient()
@@ -749,9 +666,7 @@ def test_rpc_event_session_mismatch_requires_reconnect(
     event = common_pb2.BridgeEvent(
         session_id=77, event_sequence=1, type=common_pb2.EVENT_RUN_CHANGED
     )
-    rpc_socket = FakeWebSocket(
-        [encoded_response(1, session_id=42, get_timer_state=bridge_pb2.GetTimerStateResponse())]
-    )
+    rpc_socket = RequestAwareBridgeSocket()
     install(monkeypatch, FakeWebSocket([event.SerializeToString()]), rpc_socket)
     client = BridgeClient()
 
@@ -811,7 +726,7 @@ def test_reconnect_first_event_must_match_new_rpc_session(
         FakeWebSocket(),
         FakeWebSocket(),
         FakeWebSocket([event.SerializeToString()]),
-        BridgeRespondingWebSocket(99),
+        RequestAwareBridgeSocket(99),
     )
     client = BridgeClient()
 
@@ -879,28 +794,28 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
 
 def test_remote_rpc_error_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     event_socket = FakeWebSocket()
-    rpc_socket = FakeWebSocket(
-        [
-            encoded_response(
-                1,
+    rpc_socket = RequestAwareBridgeSocket(
+        scenarios={
+            "timer_operation": response_scenario(
                 error=common_pb2.BridgeError(
-                    code=common_pb2.OPERATION_FAILED,
-                    message="operation failed",
-                ),
+                    code=common_pb2.OPERATION_FAILED, message="operation failed"
+                )
             )
-        ]
+        }
     )
     install(monkeypatch, event_socket, rpc_socket)
     client = BridgeClient()
 
-    with pytest.raises(BridgeRemoteError, match="operation failed"):
+    with pytest.raises(BridgeRemoteError) as error:
         client.reset()
+    assert error.value.code == common_pb2.OPERATION_FAILED
+    assert error.value.message == "operation failed"
     assert client.recovery_state is BridgeRecoveryState.HEALTHY
 
     client.close()
 
 
-def test_close_is_idempotent_and_rejects_operations_and_properties(
+def test_close_is_idempotent_and_rejects_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install(monkeypatch, FakeWebSocket(), FakeWebSocket())
@@ -910,9 +825,5 @@ def test_close_is_idempotent_and_rejects_operations_and_properties(
 
     with pytest.raises(BridgeClientError):
         client.get_timer_state()
-    with pytest.raises(BridgeClientError):
-        _ = client.rpc
-    with pytest.raises(BridgeClientError):
-        _ = client.events
     with pytest.raises(BridgeClientError):
         _ = client.session_id

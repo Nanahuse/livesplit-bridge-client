@@ -15,7 +15,7 @@ from livesplit_bridge import (
 )
 from livesplit_bridge import events as events_module
 
-from .test_rpc import FakeConnections, FakeWebSocket
+from .support import FakeConnections, FakeWebSocket
 
 
 def install(
@@ -40,12 +40,10 @@ def test_receive_decodes_timer_event_with_callback_state(
         timer_state=common_pb2.TimerState(phase=common_pb2.ENDED, split_index=3),
     )
     socket = FakeWebSocket([expected.SerializeToString()])
-    connections = install(monkeypatch, socket)
-    subscriber = BridgeEventSubscriber(receive_timeout_ms=50)
+    install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber()
 
     assert subscriber.receive() == expected
-    assert socket.recv_timeout == 0.05
-    assert connections.endpoints == [DEFAULT_EVENT_ENDPOINT]
     subscriber.close()
 
 
@@ -64,13 +62,25 @@ def test_low_level_subscriber_preserves_unknown_event_type(
     subscriber.close()
 
 
-def test_configured_receive_timeout_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configured_receive_timeout_is_applied_to_websocket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     socket = FakeWebSocket(timeout=True)
     install(monkeypatch, socket)
     subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
 
     assert subscriber.receive() is None
+    assert socket.recv_timeout == 0.025
 
+    subscriber.close()
+
+
+def test_custom_endpoint_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    socket = FakeWebSocket()
+    connections = install(monkeypatch, socket)
+    subscriber = BridgeEventSubscriber("ws://example.test/events")
+
+    assert connections.endpoints == ["ws://example.test/events"]
     subscriber.close()
 
 
