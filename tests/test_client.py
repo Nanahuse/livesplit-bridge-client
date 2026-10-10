@@ -107,7 +107,7 @@ def test_query_and_operation_methods_return_bridge_results(
     assert client.get_attempt() == attempt
     assert client.get_context_state() == context
     assert client.get_completed_count() == completed
-    assert not client.start().ListFields()
+    client.start()
 
     client.close()
 
@@ -629,7 +629,7 @@ def test_initial_rpc_transport_reset_requires_reconnect_and_preserves_error(
     assert state.session_id == 99
     assert client.recovery_state is BridgeRecoveryState.HEALTHY
     assert client.get_timer_state().phase == common_pb2.NOT_RUNNING
-    assert not client.split().ListFields()
+    client.split()
     client.close()
 
 

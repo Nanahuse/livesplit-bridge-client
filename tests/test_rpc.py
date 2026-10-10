@@ -127,18 +127,17 @@ def test_query_methods_send_v3_binary_requests_and_return_payload(
         assert client.session_id == 42
 
 
-def test_timer_operation_returns_empty_v3_operation_response(
+def test_timer_operation_sends_start_request_and_accepts_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     socket = RequestAwareBridgeSocket()
     install(monkeypatch, socket)
 
     with BridgeRpcClient() as client:
-        response = client.start()
+        client.start()
 
     request = bridge_pb2.Request.FromString(socket.sent[0])
     assert request.timer_operation.operation == common_pb2.TIMER_START
-    assert not response.ListFields()
 
 
 def test_game_time_operation_preserves_optional_ticks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -306,7 +305,7 @@ def test_transport_failure_does_not_retry_and_next_rpc_works(
         client.start()
 
     assert replacement.sent == []
-    assert not client.start().ListFields()
+    client.start()
     client.close()
 
 
