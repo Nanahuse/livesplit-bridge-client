@@ -87,7 +87,7 @@ def test_custom_endpoint_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_receive_timeout_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
     socket = FakeWebSocket(timeout=True)
     install(monkeypatch, socket)
-    subscriber = BridgeEventSubscriber()
+    subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
 
     assert subscriber.receive(timeout_ms=3) is None
     assert socket.recv_timeout == 0.003

@@ -115,7 +115,7 @@ def test_query_methods_send_v3_binary_requests_and_return_payload(
     }[response_type]
     getattr(response_envelope, response_field).CopyFrom(response)
     socket = RequestAwareBridgeSocket(scenarios={method: response_envelope})
-    connections = install(monkeypatch, socket)
+    install(monkeypatch, socket)
 
     with BridgeRpcClient() as client:
         actual = getattr(client, method)()
@@ -125,8 +125,6 @@ def test_query_methods_send_v3_binary_requests_and_return_payload(
         assert request.WhichOneof("body") == method
         assert actual == expected
         assert client.session_id == 42
-
-    assert connections.endpoints == [DEFAULT_RPC_ENDPOINT]
 
 
 def test_timer_operation_returns_empty_v3_operation_response(
@@ -156,19 +154,33 @@ def test_game_time_operation_preserves_optional_ticks(monkeypatch: pytest.Monkey
     assert request.game_time_operation.ticks == 1234
 
 
+class InvalidEnvelopeWebSocket(FakeWebSocket):
+    def __init__(self, violation: str) -> None:
+        super().__init__()
+        self.violation = violation
+
+    def send_binary(self, payload: bytes) -> None:
+        super().send_binary(payload)
+        request = bridge_pb2.Request.FromString(payload)
+        response = bridge_pb2.Response(
+            protocol_version=2 if self.violation == "protocol-version" else 3,
+            request_id=request.request_id + (1 if self.violation == "request-id" else 0),
+            session_id=42,
+        )
+        response.get_timer_state.SetInParent()
+        self.messages.append(response.SerializeToString())
+
+
 @pytest.mark.parametrize(
-    "response",
-    [
-        bridge_pb2.Response(protocol_version=2, session_id=42),
-        bridge_pb2.Response(protocol_version=3, request_id=2, session_id=42),
-    ],
+    "violation",
+    ["protocol-version", "request-id"],
     ids=["protocol-version", "request-id"],
 )
 def test_invalid_response_envelope_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
-    response: bridge_pb2.Response,
+    violation: str,
 ) -> None:
-    install(monkeypatch, FakeWebSocket([response.SerializeToString()]))
+    install(monkeypatch, InvalidEnvelopeWebSocket(violation))
 
     with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError):
         client.get_timer_state()

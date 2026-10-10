@@ -72,7 +72,7 @@ def test_event_received_during_initial_sync_remains_available(
     client.close()
 
 
-def test_query_and_operation_methods_delegate_to_v3_rpc(
+def test_query_and_operation_methods_return_bridge_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timer_state = common_pb2.TimerState(phase=common_pb2.RUNNING, split_index=3)
@@ -750,7 +750,6 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
                     session_id=42, event_sequence=12, type=common_pb2.EVENT_RUN_CHANGED
                 ),
             ],
-            "sequence gap",
             BridgeResyncRequiredError,
             BridgeRecoveryState.RESYNC_REQUIRED,
         ),
@@ -763,7 +762,6 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
                     session_id=77, event_sequence=11, type=common_pb2.EVENT_RUN_CHANGED
                 ),
             ],
-            "session",
             BridgeReconnectRequiredError,
             BridgeRecoveryState.RECONNECT_REQUIRED,
         ),
@@ -775,12 +773,11 @@ def test_event_sequence_gap_session_mismatch_and_unknown_type_require_sync(
                     type=cast(common_pb2.BridgeEventType, 999),
                 )
             ],
-            "Unknown Bridge event",
             BridgeResyncRequiredError,
             BridgeRecoveryState.RESYNC_REQUIRED,
         ),
     ]
-    for events, _, error_type, expected_state in cases:
+    for events, error_type, expected_state in cases:
         event_socket = FakeWebSocket([event.SerializeToString() for event in events])
         install(monkeypatch, event_socket, FakeWebSocket())
         client = BridgeClient()
