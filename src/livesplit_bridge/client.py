@@ -31,7 +31,7 @@ class BridgeRecoveryState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class BridgeSyncState:
-    """A consistent set of Bridge query results from one runtime session."""
+    """A collection of query results fetched from one Bridge session."""
 
     session_id: int
     timer_state: common_pb2.TimerState
@@ -298,7 +298,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         return self.game_time_operation(common_pb2.GAME_TIME_RESUME)
 
     def synchronize(self, *, include_completed_count: bool = False) -> BridgeSyncState:
-        """Fetch a complete client snapshot and verify every response has one session."""
+        """Fetch query results and verify every response belongs to one session."""
         self._ensure_open()
         if self._recovery_state is BridgeRecoveryState.RECONNECT_REQUIRED:
             raise BridgeReconnectRequiredError(
@@ -375,7 +375,6 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             common_pb2.EVENT_TIMER_SPLIT,
             common_pb2.EVENT_TIMER_SKIPPED,
             common_pb2.EVENT_TIMER_UNDO,
-            common_pb2.EVENT_TIMER_RESET,
             common_pb2.EVENT_TIMER_PHASE_CHANGED,
         }
         if event.type in timer_event_types and not event.HasField("timer_state"):

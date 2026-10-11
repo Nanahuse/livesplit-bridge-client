@@ -1,6 +1,6 @@
 [project]
 name = "livesplit-bridge-client"
-version = "0.4.0"
+version = "0.5.0"
 description = "Python client for LiveSplit.Bridge"
 readme = "README.md"
 requires-python = ">=3.11"

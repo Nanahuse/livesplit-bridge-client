@@ -179,10 +179,15 @@ def test_invalid_response_envelope_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
     violation: str,
 ) -> None:
-    install(monkeypatch, InvalidEnvelopeWebSocket(violation))
+    connections = install(monkeypatch, InvalidEnvelopeWebSocket(violation))
 
-    with BridgeRpcClient() as client, pytest.raises(BridgeProtocolError):
+    client = BridgeRpcClient()
+    with pytest.raises(BridgeProtocolError):
         client.get_timer_state()
+    with pytest.raises(BridgeClientError):
+        client.get_timer_state()
+    assert len(connections.endpoints) == 1
+    client.close()
 
 
 def test_remote_error_is_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,8 +202,10 @@ def test_remote_error_is_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     install(monkeypatch, socket)
 
-    with BridgeRpcClient() as client, pytest.raises(BridgeRemoteError) as error:
-        client.start()
+    with BridgeRpcClient() as client:
+        with pytest.raises(BridgeRemoteError) as error:
+            client.start()
+        assert client.get_timer_state().phase == common_pb2.NOT_RUNNING
     assert error.value.code == common_pb2.INVALID_ARGUMENT
     assert error.value.message == "invalid operation"
 
@@ -285,6 +292,7 @@ def test_text_and_malformed_responses_are_rejected(
     ("failed_socket", "error_type"),
     [
         (FakeWebSocket(timeout=True), BridgeResponseTimeoutError),
+        (FakeWebSocket([(websocket.ABNF.OPCODE_CLOSE, b"")]), BridgeClientError),
         (
             FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")]),
             BridgeClientError,
@@ -292,20 +300,23 @@ def test_text_and_malformed_responses_are_rejected(
         (FakeWebSocket([websocket.WebSocketException("transport error")]), BridgeClientError),
     ],
 )
-def test_transport_failure_does_not_retry_and_next_rpc_works(
+def test_transport_failure_discards_socket_without_reconnect_or_retry(
     monkeypatch: pytest.MonkeyPatch,
     failed_socket: FakeWebSocket,
     error_type: type[Exception],
 ) -> None:
-    replacement = RequestAwareBridgeSocket()
-    install(monkeypatch, failed_socket, replacement)
+    connections = install(monkeypatch, failed_socket)
     client = BridgeRpcClient()
 
     with pytest.raises(error_type):
         client.start()
 
-    assert replacement.sent == []
-    client.start()
+    assert failed_socket.shutdown_called
+    assert len(failed_socket.sent) == 1
+    assert len(connections.endpoints) == 1
+    with pytest.raises(BridgeClientError):
+        client.start()
+    assert len(connections.endpoints) == 1
     client.close()
 
 

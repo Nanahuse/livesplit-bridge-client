@@ -79,18 +79,18 @@ class BridgeRpcClient:
             ) from error
         self._socket = socket
 
-    def _reset_socket(self) -> None:
+    def _discard_socket(self) -> None:
         socket = self._socket
         self._socket = None
         if socket is not None:
             try:
-                socket.close()
+                shutdown = getattr(socket, "shutdown", None)
+                if shutdown is not None:
+                    shutdown()
+                else:
+                    socket.close()
             except Exception:
                 pass
-        try:
-            self._connect()
-        except BridgeClientError:
-            self._socket = None
 
     def close(self) -> None:
         if self._closed:
@@ -123,67 +123,82 @@ class BridgeRpcClient:
         request.request_id = request_id
 
         socket = self._socket
-        socket.settimeout(self._timeout_seconds())
         try:
+            socket.settimeout(self._timeout_seconds())
             socket.send_binary(request.SerializeToString())
-            payload = socket.recv()
+            opcode, payload = socket.recv_data()
         except websocket.WebSocketTimeoutException as error:
             self.transport_reset = True
-            self._reset_socket()
+            self._discard_socket()
             raise BridgeResponseTimeoutError(
                 f"No Bridge response within {self.response_timeout_ms} ms ({self.rpc_endpoint})"
             ) from error
         except (websocket.WebSocketConnectionClosedException, OSError) as error:
             self.transport_reset = True
-            self._reset_socket()
+            self._discard_socket()
             raise BridgeClientError(
                 f"RPC connection closed by Bridge ({self.rpc_endpoint})"
             ) from error
         except websocket.WebSocketException as error:
             self.transport_reset = True
-            self._reset_socket()
+            self._discard_socket()
             raise BridgeClientError(f"RPC failed: {error} ({self.rpc_endpoint})") from error
 
-        if isinstance(payload, str):
-            raise BridgeProtocolError(
-                f"Bridge returned a text frame; binary expected ({self.rpc_endpoint})"
-            )
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            self.transport_reset = True
+            self._discard_socket()
+            raise BridgeClientError(f"RPC connection closed by Bridge ({self.rpc_endpoint})")
 
         try:
+            if opcode == websocket.ABNF.OPCODE_TEXT:
+                raise BridgeProtocolError(
+                    f"Bridge returned a text frame; binary expected ({self.rpc_endpoint})"
+                )
+            if opcode != websocket.ABNF.OPCODE_BINARY:
+                raise BridgeProtocolError(
+                    f"Bridge returned an unsupported WebSocket frame ({self.rpc_endpoint})"
+                )
             response = bridge_pb2.Response.FromString(payload)
+            if response.protocol_version != PROTOCOL_VERSION:
+                raise BridgeProtocolError(
+                    f"Protocol version mismatch: expected {PROTOCOL_VERSION}, "
+                    f"got {response.protocol_version}"
+                )
+            if response.request_id != request_id:
+                raise BridgeProtocolError(
+                    f"Request ID mismatch: expected {request_id}, got {response.request_id}"
+                )
+            if response.session_id == 0:
+                raise BridgeProtocolError("Bridge returned an invalid zero session ID")
+            if not response.HasField("error"):
+                expected_body = {
+                    "get_timer_state": "get_timer_state",
+                    "get_attempt": "get_attempt",
+                    "get_run": "get_run",
+                    "get_context_state": "get_context_state",
+                    "get_completed_count": "get_completed_count",
+                    "timer_operation": "operation",
+                    "game_time_operation": "operation",
+                }.get(request.WhichOneof("body"))
+                actual_body = response.WhichOneof("body")
+                if expected_body is None or actual_body != expected_body:
+                    raise BridgeProtocolError(
+                        f"Response body mismatch: expected {expected_body!r}, got {actual_body!r}"
+                    )
+        except BridgeProtocolError:
+            self.transport_reset = True
+            self._discard_socket()
+            raise
         except Exception as error:
+            self.transport_reset = True
+            self._discard_socket()
             raise BridgeProtocolError(
                 f"Bridge returned a malformed response ({self.rpc_endpoint})"
             ) from error
 
-        if response.protocol_version != PROTOCOL_VERSION:
-            raise BridgeProtocolError(
-                f"Protocol version mismatch: expected {PROTOCOL_VERSION}, "
-                f"got {response.protocol_version}"
-            )
-        if response.request_id != request_id:
-            raise BridgeProtocolError(
-                f"Request ID mismatch: expected {request_id}, got {response.request_id}"
-            )
-        if response.session_id == 0:
-            raise BridgeProtocolError("Bridge returned an invalid zero session ID")
         if response.HasField("error"):
             self._commit_session(response.session_id)
             raise BridgeRemoteError(response.error.code, response.error.message)
-        expected_body = {
-            "get_timer_state": "get_timer_state",
-            "get_attempt": "get_attempt",
-            "get_run": "get_run",
-            "get_context_state": "get_context_state",
-            "get_completed_count": "get_completed_count",
-            "timer_operation": "operation",
-            "game_time_operation": "operation",
-        }.get(request.WhichOneof("body"))
-        actual_body = response.WhichOneof("body")
-        if expected_body is None or actual_body != expected_body:
-            raise BridgeProtocolError(
-                f"Response body mismatch: expected {expected_body!r}, got {actual_body!r}"
-            )
         self._commit_session(response.session_id)
         return response
 

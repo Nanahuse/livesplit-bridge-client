@@ -96,8 +96,8 @@ def test_receive_timeout_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.mark.parametrize(
     "payload",
-    ["not binary", b"\x08"],
-    ids=["text-frame", "malformed-protobuf"],
+    ["not binary", "", b"\x08"],
+    ids=["text-frame", "empty-text-frame", "malformed-protobuf"],
 )
 def test_invalid_event_payload_is_protocol_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -115,7 +115,7 @@ def test_invalid_event_payload_is_protocol_error(
 def test_websocket_close_is_connection_lost(monkeypatch: pytest.MonkeyPatch) -> None:
     install(
         monkeypatch,
-        FakeWebSocket([websocket.WebSocketConnectionClosedException("closed")]),
+        FakeWebSocket([(websocket.ABNF.OPCODE_CLOSE, b"")]),
     )
     subscriber = BridgeEventSubscriber(receive_timeout_ms=25)
 

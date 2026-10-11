@@ -19,6 +19,8 @@ class FakeWebSocket:
         self.always_timeout = timeout
         self.sent: list[bytes] = []
         self.recv_timeout: float | None = None
+        self.shutdown_called = False
+        self.close_called = False
 
     def send_binary(self, payload: bytes) -> None:
         self.sent.append(payload)
@@ -33,11 +35,22 @@ class FakeWebSocket:
             raise websocket.WebSocketTimeoutException("timed out")
         raise websocket.WebSocketConnectionClosedException("closed")
 
+    def recv_data(self, control_frame: bool = False) -> tuple[int, Any]:
+        item = self.recv()
+        if isinstance(item, tuple):
+            return item
+        if isinstance(item, str):
+            return websocket.ABNF.OPCODE_TEXT, item
+        return websocket.ABNF.OPCODE_BINARY, item
+
     def settimeout(self, value: float | None) -> None:
         self.recv_timeout = value
 
     def close(self) -> None:
-        pass
+        self.close_called = True
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
 
 
 class FakeConnections:

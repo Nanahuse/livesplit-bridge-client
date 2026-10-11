@@ -76,20 +76,26 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
     def _recv_event(self, socket: Any, wait_ms: int | None) -> common_pb2.BridgeEvent | None:
         socket.settimeout(None if wait_ms is None else wait_ms / 1000)
         try:
-            payload = socket.recv()
+            opcode, payload = socket.recv_data()
         except websocket.WebSocketTimeoutException:
             return None
         except (websocket.WebSocketConnectionClosedException, OSError):
             self._connection_lost(f"Event connection closed by Bridge ({self.event_endpoint})")
         except websocket.WebSocketException as error:
             self._connection_lost(f"Event connection failed: {error} ({self.event_endpoint})")
-        return self._decode_event(payload)
-
-    def _decode_event(self, payload: Any) -> common_pb2.BridgeEvent:
-        if isinstance(payload, str):
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            self._connection_lost(f"Event connection closed by Bridge ({self.event_endpoint})")
+        if opcode == websocket.ABNF.OPCODE_TEXT:
             raise BridgeProtocolError(
                 f"Bridge returned a text frame; binary expected ({self.event_endpoint})"
             )
+        if opcode != websocket.ABNF.OPCODE_BINARY:
+            raise BridgeProtocolError(
+                f"Bridge returned an unsupported WebSocket frame ({self.event_endpoint})"
+            )
+        return self._decode_event(payload)
+
+    def _decode_event(self, payload: Any) -> common_pb2.BridgeEvent:
         try:
             return common_pb2.BridgeEvent.FromString(payload)
         except Exception as error:

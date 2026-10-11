@@ -46,8 +46,9 @@ with BridgeClient() as client:
 ```
 
 `BridgeClient`はEvents WebSocketを先に、RPC WebSocketを次に接続します。初期状態は
-`synchronize()`で取得します。複数のQueryを順に実行し、すべてのResponseが同じRuntime
-sessionから返った場合だけ`BridgeSyncState`を返します。`completed_count`は通常省略され、
+`synchronize()`で取得します。複数のQueryを順に実行し、同一Bridgeセッションから取得した
+Query結果の集合として`BridgeSyncState`を返します。結果全体が同じ時点の状態を表す保証は
+ありません。`completed_count`は通常省略され、
 `include_completed_count=True`で取得できます。接続時にsnapshot eventは送られません。
 同期中に届いたEventはEvents WebSocketの受信bufferに残り、同期完了後の`receive()`で処理されます。
 
@@ -88,8 +89,10 @@ client = BridgeClient(
 ```
 
 Timer event（`EVENT_TIMER_STARTED`、`EVENT_TIMER_SPLIT`、`EVENT_TIMER_SKIPPED`、
-`EVENT_TIMER_UNDO`、`EVENT_TIMER_RESET`、`EVENT_TIMER_PHASE_CHANGED`）には、LiveSplit
-callback時点の`timer_state`が含まれます。`EVENT_RUN_CHANGED`と
+`EVENT_TIMER_UNDO`、`EVENT_TIMER_PHASE_CHANGED`）には、LiveSplit callback時点の
+`timer_state`が含まれます。`EVENT_TIMER_RESET`はReset callbackでTimerStateのcaptureに
+失敗した場合、省略されます。その場合は必要に応じて`get_timer_state()`を呼び出してください。
+`EVENT_RUN_CHANGED`と
 `EVENT_CONTEXT_CHANGED`には含まれません。アプリケーションheartbeatはありません。
 WebSocket Ping/Pongはtransportのliveness確認に使用されます。
 
@@ -102,7 +105,9 @@ RPCの各Responseにも`session_id`があり、`client.session_id`は直近のRe
 - RPC session変更、RPC/Event session不一致、Events session変更は
   `BridgeReconnectRequiredError`です。両WebSocketを張り直す`reconnect()`を使ってください。
 - Bridgeからの有効なerror responseは`BridgeRemoteError`です。
-- 不正なprotobufやprotocol envelope/bodyは`BridgeProtocolError`です。
+- Eventの不正なprotobufやText frameは`BridgeProtocolError`となり、`synchronize()`が必要です。
+- RPCの不正なprotobuf、frame、protocol envelope/bodyは`BridgeProtocolError`となり、接続を破棄して
+  `RECONNECT_REQUIRED`にします。`reconnect()`で両接続を張り直してください。
 
 `synchronize()`は`RESYNC_REQUIRED`を回復しますが、`RECONNECT_REQUIRED`では拒否されます。
 成功後はEvent sequence baselineを解除し、次のEventから検証を再開します。RPC session changeが
@@ -130,8 +135,9 @@ except BridgeConnectionLostError:
     state = client.reconnect()
 ```
 
-`reconnect()`は新しいEvents接続、RPC接続の順に確立し、新しい接続上でfull synchronizeを
-実行します。成功した場合だけ接続を切り替え、`BridgeSyncState`を返します。接続または同期に
+`reconnect()`は新しいEvents接続、RPC接続の順に確立し、新しい接続上で`synchronize()`と同じQuery群を
+実行します。これは同一セッションからQuery結果を集める処理で、結果全体が同じ時点の状態を表す保証はありません。
+成功した場合だけ接続を切り替え、`BridgeSyncState`を返します。接続または同期に
 失敗した場合は、新しい接続を閉じて現在の接続を維持します。再接続後のEvent sequenceは新しい
 baselineから検証されます。Events sessionは最初のEvent受信で確定し、RPC sessionと違う場合は
 `BridgeReconnectRequiredError`になります。
@@ -152,8 +158,8 @@ Event受信時にEvents sessionを確定します。Control request（Game Time�
 
 RPCだけを使う場合は`BridgeRpcClient`、Event購読だけの場合は`BridgeEventSubscriber`を
 利用できます。`BridgeClient`と同じ接続先・timeoutの指定方法です。
-`BridgeRpcClient`単体ではtransport障害時にRPC socketを再確立しますが、失敗したrequestは自動再送
-されません。RPCとEventsのsession continuityを一緒に管理する場合は統合`BridgeClient`を使用してください。
+`BridgeRpcClient`単体ではtransport障害後にsocketを破棄し、暗黙的な再接続はしません。失敗したrequestも
+自動再送されません。RPCとEventsのsession continuityを一緒に管理する場合は統合`BridgeClient`を使用してください。
 
 ```python
 from livesplit_bridge import BridgeRpcClient
