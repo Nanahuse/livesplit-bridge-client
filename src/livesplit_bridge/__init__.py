@@ -1,4 +1,4 @@
-from .client import BridgeClient
+from .client import BridgeClient, BridgeRecoveryState, BridgeSyncState
 from .events import (
     DEFAULT_EVENT_ENDPOINT,
     BridgeConnectionLostError,
@@ -10,8 +10,10 @@ from .rpc import (
     PROTOCOL_VERSION,
     BridgeClientError,
     BridgeProtocolError,
+    BridgeReconnectRequiredError,
     BridgeRemoteError,
     BridgeResponseTimeoutError,
+    BridgeResyncRequiredError,
     BridgeRpcClient,
 )
 
@@ -24,9 +26,13 @@ __all__ = [
     "BridgeConnectionLostError",
     "BridgeEventSubscriber",
     "BridgeProtocolError",
+    "BridgeReconnectRequiredError",
+    "BridgeRecoveryState",
+    "BridgeResyncRequiredError",
     "BridgeRemoteError",
     "BridgeResponseTimeoutError",
     "BridgeRpcClient",
+    "BridgeSyncState",
     "bridge_pb2",
     "common_pb2",
     "run_pb2",

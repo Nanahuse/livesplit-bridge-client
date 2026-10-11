@@ -22,18 +22,18 @@ SOURCE_FILE = PROJECT_ROOT / "protocol-source.json"
 OUTPUT_ROOT = PROJECT_ROOT / "src"
 
 PROTO_FILES = (
-    "livesplit/bridge/v2/common.proto",
-    "livesplit/bridge/v2/run.proto",
-    "livesplit/bridge/v2/bridge.proto",
+    "livesplit/bridge/v3/common.proto",
+    "livesplit/bridge/v3/run.proto",
+    "livesplit/bridge/v3/bridge.proto",
 )
 
 GENERATED_FILES = (
-    "livesplit/bridge/v2/common_pb2.py",
-    "livesplit/bridge/v2/common_pb2.pyi",
-    "livesplit/bridge/v2/run_pb2.py",
-    "livesplit/bridge/v2/run_pb2.pyi",
-    "livesplit/bridge/v2/bridge_pb2.py",
-    "livesplit/bridge/v2/bridge_pb2.pyi",
+    "livesplit/bridge/v3/common_pb2.py",
+    "livesplit/bridge/v3/common_pb2.pyi",
+    "livesplit/bridge/v3/run_pb2.py",
+    "livesplit/bridge/v3/run_pb2.pyi",
+    "livesplit/bridge/v3/bridge_pb2.py",
+    "livesplit/bridge/v3/bridge_pb2.pyi",
 )
 
 
