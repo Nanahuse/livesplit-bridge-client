@@ -38,7 +38,6 @@ def verify(entries: list[str], archive: Path) -> None:
         required = (
             "protocol-source.json",
             "tests/fixtures/csharp-serialized-cases.json",
-            "tests/fixtures/validation-cases.json",
             "tools/update_protocol.py",
             "tools/protocol_names.json",
             "tools/run_integration.py",

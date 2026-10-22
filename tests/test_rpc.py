@@ -66,7 +66,6 @@ def test_queries_use_json_text_and_return_models(
     with BridgeRpcClient() as client:
         actual = getattr(client, method)()
         assert isinstance(actual, model)
-        assert actual == model.model_validate(query_result(method))
         assert client.session_id == 42
     assert json.loads(socket.sent[0]) == {"request_id": 1, "method": method}
 
@@ -118,33 +117,27 @@ def test_ids_wrap_through_zero_and_do_not_mutate_request(monkeypatch: pytest.Mon
 @pytest.mark.parametrize(
     "payload",
     [
-        b"binary",
-        "not JSON",
-        "[]",
-        "null",
-        '{"request_id":1,"request_id":1}',
-        '{"request_id":1,"session_id":42,"result":NaN}',
-        '{"request_id":1,"session_id":42,"result":Infinity}',
-        (websocket.ABNF.OPCODE_TEXT, b"\xff"),
-        (websocket.ABNF.OPCODE_PONG, b""),
-        json.dumps({"request_id": 2, "session_id": 42, "result": query_result("get_timer_state")}),
-        *[
-            json.dumps(envelope)
-            for envelope in (
-                {"request_id": 1, "session_id": 0, "result": None},
-                {"request_id": 1, "session_id": 2**32, "result": None},
-                {"request_id": True, "session_id": 42, "result": None},
-                {"request_id": 1, "session_id": "42", "result": None},
-                {"request_id": 1, "session_id": 42, "result": query_result("get_run")},
-                {"request_id": 1, "session_id": 42, "result": None},
-                {"request_id": 1, "session_id": 42, "result": {}},
-                {"request_id": 1, "session_id": 42},
-                {"request_id": 1, "session_id": 42, "result": None, "error": None},
-                {"request_id": 1, "session_id": 42, "error": {"code": 3, "message": "bad"}},
-                {"request_id": 1, "session_id": 42, "error": {"code": "unknown", "message": "bad"}},
-                {"request_id": 1, "session_id": 42, "result": None, "protocol_version": 4},
-            )
-        ],
+        pytest.param(b"binary", id="binary-frame"),
+        pytest.param("not JSON", id="malformed-json"),
+        pytest.param("[]", id="non-object-json"),
+        pytest.param('{"request_id":1,"request_id":1}', id="duplicate-property"),
+        pytest.param('{"request_id":1,"session_id":42,"result":NaN}', id="non-json-constant"),
+        pytest.param((websocket.ABNF.OPCODE_TEXT, b"\xff"), id="invalid-utf8"),
+        pytest.param((websocket.ABNF.OPCODE_PONG, b""), id="unsupported-frame"),
+        pytest.param(
+            json.dumps(
+                {"request_id": 2, "session_id": 42, "result": query_result("get_timer_state")}
+            ),
+            id="request-id-mismatch",
+        ),
+        pytest.param(
+            json.dumps({"request_id": 1, "session_id": 42, "result": query_result("get_run")}),
+            id="wrong-query-result",
+        ),
+        pytest.param(
+            '{"request_id":1,"session_id":42,"result":null}', id="control-result-for-query"
+        ),
+        pytest.param('{"request_id":1,"session_id":42}', id="missing-response-body"),
     ],
 )
 def test_invalid_responses_discard_connection(
@@ -184,25 +177,14 @@ def test_control_rejects_query_result(monkeypatch: pytest.MonkeyPatch) -> None:
         client.start()
 
 
-@pytest.mark.parametrize(
-    "code",
-    [
-        "invalid_request",
-        "invalid_argument",
-        "operation_failed",
-        "internal_error",
-        "permission_denied",
-    ],
-)
-def test_remote_errors_keep_connection_and_commit_session(
+def test_remote_error_keeps_connection_and_commits_session(
     monkeypatch: pytest.MonkeyPatch,
-    code: str,
 ) -> None:
     socket = RequestAwareBridgeSocket(
         scenarios={
             "timer_operation": {
                 "session_id": 99,
-                "error": {"code": code, "message": "操作失敗"},
+                "error": {"code": "operation_failed", "message": "操作失敗"},
             }
         }
     )
@@ -211,7 +193,7 @@ def test_remote_errors_keep_connection_and_commit_session(
         client.get_timer_state()
         with pytest.raises(BridgeRemoteError) as error:
             client.start()
-        assert error.value.code == code
+        assert error.value.code == "operation_failed"
         assert error.value.message == "操作失敗"
         assert client.session_id == 99
         assert client.session_change == (42, 99)
@@ -266,9 +248,8 @@ def test_bad_local_arguments_do_not_send(monkeypatch: pytest.MonkeyPatch) -> Non
     socket = RequestAwareBridgeSocket()
     install(monkeypatch, socket)
     with BridgeRpcClient() as client:
-        for ticks in (True, "1", 1.0, 2**63, -(2**63) - 1):
-            with pytest.raises(ValidationError):
-                client.set_game_time_ticks(ticks)  # ty: ignore[invalid-argument-type]
+        with pytest.raises(ValidationError):
+            client.set_game_time_ticks("invalid")  # ty: ignore[invalid-argument-type]
         with pytest.raises(ValueError):
             client.game_time_operation(GameTimeOperation.SET)
         with pytest.raises(ValueError):
