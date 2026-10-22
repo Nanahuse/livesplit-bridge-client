@@ -1,92 +1,78 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = [
-#   "grpcio-tools==1.75.1",
-#   "protobuf>=6.31,<7",
-# ]
+# dependencies = []
 # ///
 
-"""Regenerate the checked-in protobuf Python code from a pinned LiveSplit.Bridge revision."""
+"""Synchronize the official JSON v4 schemas from the pinned Bridge revision."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import tempfile
 from pathlib import Path
 
-from grpc_tools import protoc
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_FILE = PROJECT_ROOT / "protocol-source.json"
-OUTPUT_ROOT = PROJECT_ROOT / "src"
-
-PROTO_FILES = (
-    "livesplit/bridge/v3/common.proto",
-    "livesplit/bridge/v3/run.proto",
-    "livesplit/bridge/v3/bridge.proto",
-)
-
-GENERATED_FILES = (
-    "livesplit/bridge/v3/common_pb2.py",
-    "livesplit/bridge/v3/common_pb2.pyi",
-    "livesplit/bridge/v3/run_pb2.py",
-    "livesplit/bridge/v3/run_pb2.pyi",
-    "livesplit/bridge/v3/bridge_pb2.py",
-    "livesplit/bridge/v3/bridge_pb2.pyi",
-)
+SCHEMA_FILES = ("rpc-request.schema.json", "rpc-response.schema.json", "bridge-event.schema.json")
 
 
-def run(command: list[str], *, cwd: Path, check: bool = True) -> str:
-    result = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
-    if check and result.returncode != 0:
-        detail = f"\n{result.stdout}\n{result.stderr}"
-        raise RuntimeError(f"command failed ({result.returncode}): {command}{detail}")
+def run(command: list[str], *, cwd: Path) -> str:
+    result = subprocess.run(
+        command, cwd=cwd, check=False, capture_output=True, text=True, encoding="utf-8"
+    )
+    if result.returncode:
+        raise RuntimeError(f"command failed: {command}\n{result.stdout}\n{result.stderr}")
     return result.stdout
 
 
-def fetch_proto(repository: str, revision: str, destination: Path) -> None:
-    clone = ["git", "clone", "--filter=blob:none", "--no-checkout", repository, str(destination)]
-    run(clone, cwd=PROJECT_ROOT)
-    run(["git", "sparse-checkout", "set", "proto"], cwd=destination)
-    run(["git", "checkout", revision], cwd=destination)
-
-
-def generate(proto_root: Path, output_root: Path) -> None:
-    proto_files = [(proto_root / proto_file).resolve() for proto_file in PROTO_FILES]
-    output_root.mkdir(parents=True, exist_ok=True)
-    result = protoc.main(
-        [
-            "grpc_tools.protoc",
-            f"--proto_path={proto_root}",
-            f"--python_out={output_root}",
-            f"--pyi_out={output_root}",
-            *(str(proto_file) for proto_file in proto_files),
-        ]
+def synchronize(checkout: Path, revision: str, *, check: bool) -> None:
+    actual = run(["git", "rev-parse", "HEAD"], cwd=checkout).strip()
+    if actual != revision:
+        raise RuntimeError(f"Expected Bridge revision {revision}, got {actual}")
+    files = {f"schemas/v4/{name}": PROJECT_ROOT / "schemas/v4" / name for name in SCHEMA_FILES}
+    files["tools/schema/samples/validation-cases.json"] = (
+        PROJECT_ROOT / "tests/fixtures/validation-cases.json"
     )
-    if result != 0:
-        raise RuntimeError(f"protoc exited with status {result}")
+    for upstream_path, path in files.items():
+        # Read the committed blob so local changes cannot contaminate the contract.
+        content = run(["git", "show", f"{revision}:{upstream_path}"], cwd=checkout)
+        json.loads(content)
+        if check:
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                raise RuntimeError(f"Contract differs from pinned Bridge revision: {path}")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="verify without rewriting files")
+    parser.add_argument("--source", type=Path, help="use an existing pinned Bridge checkout")
+    args = parser.parse_args()
     source = json.loads(SOURCE_FILE.read_text(encoding="utf-8"))
-    repository = source["repository"]
     revision = source["revision"]
-
-    temporary_directory = tempfile.TemporaryDirectory(prefix="livesplit-bridge-protocol-")
-    try:
-        checkout = Path(temporary_directory.name) / "LiveSplit.Bridge"
-        fetch_proto(repository, revision, checkout)
-        generate(checkout / "proto", OUTPUT_ROOT)
-    finally:
-        temporary_directory.cleanup()
-
-    for generated_file in GENERATED_FILES:
-        path = OUTPUT_ROOT / generated_file
-        if not path.is_file():
-            raise RuntimeError(f"generated file is missing: {path}")
-
-    print(f"Successfully generated protobuf files from {repository}@{revision}")
+    if args.source is not None:
+        synchronize(args.source.resolve(), revision, check=args.check)
+    else:
+        with tempfile.TemporaryDirectory(prefix="livesplit-bridge-schema-") as directory:
+            checkout = Path(directory) / "Bridge"
+            run(
+                [
+                    "git",
+                    "clone",
+                    "--filter=blob:none",
+                    "--no-checkout",
+                    source["repository"],
+                    str(checkout),
+                ],
+                cwd=PROJECT_ROOT,
+            )
+            run(["git", "checkout", "--detach", revision], cwd=checkout)
+            synchronize(checkout, revision, check=args.check)
+    print(f"Schemas {'verified' if args.check else 'synchronized'} from Bridge@{revision}")
     return 0
 
 

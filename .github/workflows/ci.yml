@@ -39,13 +39,21 @@ jobs:
         run: uv init --bare --no-workspace .tmp/test-project
 
       - name: Install library with uv add
-        run: uv add --project .tmp/test-project . 'pytest>=8,<10'
+        run: uv add --project .tmp/test-project . 'pytest>=8,<10' 'jsonschema>=4.23,<5'
 
       - name: Verify installed library
         run: uv run --project .tmp/test-project python -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__, b.__file__"
 
       - name: Test installed library
         run: uv run --project .tmp/test-project pytest -q tests
+
+      - name: Set up .NET SDK for official v4 Bridge
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test real v4 Bridge communication
+        run: uv run --project .tmp/test-project python tools/run_integration.py
 
   quality:
     name: Quality
@@ -67,9 +75,9 @@ jobs:
       - name: Sync quality dependencies
         run: uv sync --group dev --no-install-project
 
-      - name: Verify generated protocol
+      - name: Verify pinned JSON schemas
         run: |
-          uv run tools/update_protocol.py
+          uv run tools/update_protocol.py --check
           git diff --exit-code
 
       - name: Lint

@@ -3,11 +3,40 @@ from __future__ import annotations
 from typing import Any, Self
 
 import websocket
+from pydantic import TypeAdapter
 
-from .protocol import bridge_pb2, common_pb2, run_pb2
+from ._api import BridgeApi
+from ._json import decode_object
+from .models import (
+    UINT32_MAX,
+    AttemptState,
+    CompletedCount,
+    ContextState,
+    ErrorResponse,
+    GameTimeRequest,
+    QueryMethod,
+    QueryRequest,
+    RpcRequest,
+    RpcResult,
+    RunIcons,
+    RunState,
+    SuccessResponse,
+    TimerRequest,
+    TimerState,
+)
 
-DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v3/rpc"
-PROTOCOL_VERSION = 3
+DEFAULT_RPC_ENDPOINT = "ws://127.0.0.1:54000/bridge/v4/rpc"
+
+_REQUEST = TypeAdapter(RpcRequest)
+_RESPONSE = TypeAdapter(SuccessResponse[RpcResult] | ErrorResponse)
+_QUERY_RESULTS = {
+    QueryMethod.GET_TIMER_STATE: TimerState,
+    QueryMethod.GET_RUN: RunState,
+    QueryMethod.GET_RUN_ICONS: RunIcons,
+    QueryMethod.GET_ATTEMPT: AttemptState,
+    QueryMethod.GET_CONTEXT_STATE: ContextState,
+    QueryMethod.GET_COMPLETED_COUNT: CompletedCount,
+}
 
 
 class BridgeClientError(RuntimeError):
@@ -33,13 +62,13 @@ class BridgeReconnectRequiredError(BridgeResyncRequiredError):
 class BridgeRemoteError(BridgeClientError):
     """Raised when the Bridge returns a structured error."""
 
-    def __init__(self, code: int, message: str) -> None:
+    def __init__(self, code: str, message: str) -> None:
         self.code = code
         self.message = message
         super().__init__(f"Bridge error {code}: {message}")
 
 
-class BridgeRpcClient:
+class BridgeRpcClient(BridgeApi):
     """Synchronous WebSocket client for LiveSplit.Bridge RPC.
 
     This class is single-threaded: a client owns one WebSocket connection and must only
@@ -109,23 +138,25 @@ class BridgeRpcClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
+    def request(self, request: RpcRequest) -> SuccessResponse[RpcResult]:
         self.session_change = None
         self.transport_reset = False
         if self._closed or self._socket is None:
             raise BridgeClientError("Client is closed")
-        if not isinstance(request, bridge_pb2.Request):
-            raise TypeError("request must be a bridge_pb2.Request")
+        if not isinstance(request, (QueryRequest, TimerRequest, GameTimeRequest)):
+            raise TypeError("request must be a typed v4 RPC request")
 
         request_id = self._next_request_id
-        self._next_request_id += 1
-        request.protocol_version = PROTOCOL_VERSION
-        request.request_id = request_id
+        # Revalidate caller-owned models too: Pydantic models can be mutated after creation.
+        request = _REQUEST.validate_python(request.model_dump()).model_copy(
+            update={"request_id": request_id}
+        )
+        self._next_request_id = (request_id + 1) & UINT32_MAX
 
         socket = self._socket
         try:
             socket.settimeout(self._timeout_seconds())
-            socket.send_binary(request.SerializeToString())
+            socket.send(request.model_dump_json(), opcode=websocket.ABNF.OPCODE_TEXT)
             opcode, payload = socket.recv_data()
         except websocket.WebSocketTimeoutException as error:
             self.transport_reset = True
@@ -150,40 +181,29 @@ class BridgeRpcClient:
             raise BridgeClientError(f"RPC connection closed by Bridge ({self.rpc_endpoint})")
 
         try:
-            if opcode == websocket.ABNF.OPCODE_TEXT:
+            if opcode == websocket.ABNF.OPCODE_BINARY:
                 raise BridgeProtocolError(
-                    f"Bridge returned a text frame; binary expected ({self.rpc_endpoint})"
+                    f"Bridge returned a binary frame; text expected ({self.rpc_endpoint})"
                 )
-            if opcode != websocket.ABNF.OPCODE_BINARY:
+            if opcode != websocket.ABNF.OPCODE_TEXT:
                 raise BridgeProtocolError(
                     f"Bridge returned an unsupported WebSocket frame ({self.rpc_endpoint})"
                 )
-            response = bridge_pb2.Response.FromString(payload)
-            if response.protocol_version != PROTOCOL_VERSION:
-                raise BridgeProtocolError(
-                    f"Protocol version mismatch: expected {PROTOCOL_VERSION}, "
-                    f"got {response.protocol_version}"
-                )
+            response = _RESPONSE.validate_python(decode_object(payload))
             if response.request_id != request_id:
                 raise BridgeProtocolError(
                     f"Request ID mismatch: expected {request_id}, got {response.request_id}"
                 )
-            if response.session_id == 0:
-                raise BridgeProtocolError("Bridge returned an invalid zero session ID")
-            if not response.HasField("error"):
-                expected_body = {
-                    "get_timer_state": "get_timer_state",
-                    "get_attempt": "get_attempt",
-                    "get_run": "get_run",
-                    "get_context_state": "get_context_state",
-                    "get_completed_count": "get_completed_count",
-                    "timer_operation": "operation",
-                    "game_time_operation": "operation",
-                }.get(request.WhichOneof("body"))
-                actual_body = response.WhichOneof("body")
-                if expected_body is None or actual_body != expected_body:
+            if isinstance(response, SuccessResponse):
+                expected_type = (
+                    _QUERY_RESULTS[request.method]
+                    if isinstance(request, QueryRequest)
+                    else type(None)
+                )
+                if not isinstance(response.result, expected_type):
                     raise BridgeProtocolError(
-                        f"Response body mismatch: expected {expected_body!r}, got {actual_body!r}"
+                        f"Response result mismatch for {request.method}: "
+                        f"expected {expected_type.__name__}, got {type(response.result).__name__}"
                     )
         except BridgeProtocolError:
             self.transport_reset = True
@@ -196,7 +216,7 @@ class BridgeRpcClient:
                 f"Bridge returned a malformed response ({self.rpc_endpoint})"
             ) from error
 
-        if response.HasField("error"):
+        if isinstance(response, ErrorResponse):
             self._commit_session(response.session_id)
             raise BridgeRemoteError(response.error.code, response.error.message)
         self._commit_session(response.session_id)
@@ -211,81 +231,3 @@ class BridgeRpcClient:
             else None
         )
         self.session_id = committed_session_id
-
-    def get_timer_state(self) -> common_pb2.TimerState:
-        response = self.request(
-            bridge_pb2.Request(get_timer_state=bridge_pb2.GetTimerStateRequest())
-        )
-        return response.get_timer_state.timer_state
-
-    def get_run(self) -> run_pb2.RunState:
-        response = self.request(bridge_pb2.Request(get_run=bridge_pb2.GetRunRequest()))
-        return response.get_run.run
-
-    def get_attempt(self) -> common_pb2.AttemptState:
-        response = self.request(bridge_pb2.Request(get_attempt=bridge_pb2.GetAttemptRequest()))
-        return response.get_attempt.attempt
-
-    def get_context_state(self) -> common_pb2.ContextState:
-        response = self.request(
-            bridge_pb2.Request(get_context_state=bridge_pb2.GetContextStateRequest())
-        )
-        return response.get_context_state.context_state
-
-    def get_completed_count(self) -> common_pb2.CompletedCount:
-        response = self.request(
-            bridge_pb2.Request(get_completed_count=bridge_pb2.GetCompletedCountRequest())
-        )
-        return response.get_completed_count.completed_count
-
-    def timer_operation(
-        self, operation: common_pb2.TimerOperationType
-    ) -> common_pb2.OperationResponse:
-        response = self.request(
-            bridge_pb2.Request(
-                timer_operation=bridge_pb2.TimerOperationRequest(operation=operation)
-            )
-        )
-        return response.operation
-
-    def game_time_operation(
-        self, operation: common_pb2.GameTimeOperationType, *, ticks: int | None = None
-    ) -> common_pb2.OperationResponse:
-        operation_request = bridge_pb2.GameTimeOperationRequest(operation=operation)
-        if ticks is not None:
-            operation_request.ticks = ticks
-        response = self.request(bridge_pb2.Request(game_time_operation=operation_request))
-        return response.operation
-
-    def start(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_START)
-
-    def split(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_SPLIT)
-
-    def skip(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_SKIP)
-
-    def undo(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_UNDO)
-
-    def reset(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_RESET)
-
-    def pause(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_PAUSE)
-
-    def resume(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_RESUME)
-
-    def initialize_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.INITIALIZE)
-
-    def set_game_time_ticks(self, ticks: int) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.SET, ticks=ticks)
-
-    def pause_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.GAME_TIME_PAUSE)
-
-    def resume_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.GAME_TIME_RESUME)

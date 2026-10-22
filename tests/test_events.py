@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import cast
-
 import pytest
 import websocket
 
@@ -11,11 +9,10 @@ from livesplit_bridge import (
     BridgeConnectionLostError,
     BridgeEventSubscriber,
     BridgeProtocolError,
-    common_pb2,
 )
 from livesplit_bridge import events as events_module
 
-from .support import FakeConnections, FakeWebSocket
+from .support import FakeConnections, FakeWebSocket, event, timer
 
 
 def install(
@@ -26,20 +23,15 @@ def install(
     return connections
 
 
-def test_default_endpoint_is_v3() -> None:
-    assert DEFAULT_EVENT_ENDPOINT == "ws://127.0.0.1:54000/bridge/v3/events"
+def test_default_endpoint_is_v4() -> None:
+    assert DEFAULT_EVENT_ENDPOINT == "ws://127.0.0.1:54000/bridge/v4/events"
 
 
 def test_receive_decodes_timer_event_with_callback_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    expected = common_pb2.BridgeEvent(
-        session_id=9,
-        event_sequence=4,
-        type=common_pb2.EVENT_TIMER_SPLIT,
-        timer_state=common_pb2.TimerState(phase=common_pb2.ENDED, split_index=3),
-    )
-    socket = FakeWebSocket([expected.SerializeToString()])
+    expected = event(4, session_id=9, kind="timer_split", state=timer(phase="ended", split_index=3))
+    socket = FakeWebSocket([expected.model_dump_json()])
     install(monkeypatch, socket)
     subscriber = BridgeEventSubscriber()
 
@@ -47,19 +39,11 @@ def test_receive_decodes_timer_event_with_callback_state(
     subscriber.close()
 
 
-def test_low_level_subscriber_preserves_unknown_event_type(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    unknown = common_pb2.BridgeEvent(
-        session_id=12,
-        event_sequence=57,
-        type=cast(common_pb2.BridgeEventType, 999),
-    )
-    install(monkeypatch, FakeWebSocket([unknown.SerializeToString()]))
-    subscriber = BridgeEventSubscriber()
-
-    assert subscriber.receive() == unknown
-    subscriber.close()
+def test_unknown_event_type_is_protocol_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = '{"session_id":12,"event_sequence":57,"type":"unknown","timer_state":null}'
+    install(monkeypatch, FakeWebSocket([payload]))
+    with BridgeEventSubscriber() as subscriber, pytest.raises(BridgeProtocolError):
+        subscriber.receive()
 
 
 def test_configured_receive_timeout_is_applied_to_websocket(
@@ -96,8 +80,8 @@ def test_receive_timeout_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.mark.parametrize(
     "payload",
-    ["not binary", "", b"\x08"],
-    ids=["text-frame", "empty-text-frame", "malformed-protobuf"],
+    ["not JSON", "", b"binary"],
+    ids=["malformed-json", "empty-json", "binary-frame"],
 )
 def test_invalid_event_payload_is_protocol_error(
     monkeypatch: pytest.MonkeyPatch,

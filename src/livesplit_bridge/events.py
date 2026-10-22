@@ -5,17 +5,18 @@ from typing import Any, NoReturn, Self
 
 import websocket
 
-from .protocol import common_pb2
+from ._json import decode_object
+from .models import BridgeEvent
 from .rpc import BridgeClientError, BridgeProtocolError
 
-DEFAULT_EVENT_ENDPOINT = "ws://127.0.0.1:54000/bridge/v3/events"
+DEFAULT_EVENT_ENDPOINT = "ws://127.0.0.1:54000/bridge/v4/events"
 
 
 class BridgeConnectionLostError(BridgeClientError):
     """Raised when the event stream connection is lost."""
 
 
-class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
+class BridgeEventSubscriber(Iterator[BridgeEvent]):
     """Synchronous WebSocket subscriber for LiveSplit.Bridge events.
 
     This class is single-threaded: it must only be used from a single thread at a time.
@@ -62,7 +63,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent | None:
+    def receive(self, *, timeout_ms: int | None = None) -> BridgeEvent | None:
         if self._closed or self._socket is None:
             raise BridgeClientError("Event subscriber is closed")
         if self._connection_lost_message is not None:
@@ -73,7 +74,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
         socket = self._socket
         return self._recv_event(socket, effective_timeout)
 
-    def _recv_event(self, socket: Any, wait_ms: int | None) -> common_pb2.BridgeEvent | None:
+    def _recv_event(self, socket: Any, wait_ms: int | None) -> BridgeEvent | None:
         socket.settimeout(None if wait_ms is None else wait_ms / 1000)
         try:
             opcode, payload = socket.recv_data()
@@ -85,19 +86,19 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             self._connection_lost(f"Event connection failed: {error} ({self.event_endpoint})")
         if opcode == websocket.ABNF.OPCODE_CLOSE:
             self._connection_lost(f"Event connection closed by Bridge ({self.event_endpoint})")
-        if opcode == websocket.ABNF.OPCODE_TEXT:
+        if opcode == websocket.ABNF.OPCODE_BINARY:
             raise BridgeProtocolError(
-                f"Bridge returned a text frame; binary expected ({self.event_endpoint})"
+                f"Bridge returned a binary frame; text expected ({self.event_endpoint})"
             )
-        if opcode != websocket.ABNF.OPCODE_BINARY:
+        if opcode != websocket.ABNF.OPCODE_TEXT:
             raise BridgeProtocolError(
                 f"Bridge returned an unsupported WebSocket frame ({self.event_endpoint})"
             )
         return self._decode_event(payload)
 
-    def _decode_event(self, payload: Any) -> common_pb2.BridgeEvent:
+    def _decode_event(self, payload: Any) -> BridgeEvent:
         try:
-            return common_pb2.BridgeEvent.FromString(payload)
+            return BridgeEvent.model_validate(decode_object(payload))
         except Exception as error:
             raise BridgeProtocolError(
                 f"Bridge returned a malformed event ({self.event_endpoint})"
@@ -108,7 +109,7 @@ class BridgeEventSubscriber(Iterator[common_pb2.BridgeEvent]):
             self._connection_lost_message = message
         raise BridgeConnectionLostError(message)
 
-    def __next__(self) -> common_pb2.BridgeEvent:
+    def __next__(self) -> BridgeEvent:
         while (event := self.receive()) is None:
             pass
         return event

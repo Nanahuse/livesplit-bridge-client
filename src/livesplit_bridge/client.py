@@ -5,12 +5,24 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import NoReturn, Self, TypeVar
 
+from ._api import BridgeApi
 from .events import (
     DEFAULT_EVENT_ENDPOINT,
     BridgeConnectionLostError,
     BridgeEventSubscriber,
 )
-from .protocol import bridge_pb2, common_pb2, run_pb2
+from .models import (
+    UINT32_MAX,
+    AttemptState,
+    BridgeEvent,
+    CompletedCount,
+    ContextState,
+    RpcRequest,
+    RpcResult,
+    RunState,
+    SuccessResponse,
+    TimerState,
+)
 from .rpc import (
     DEFAULT_RPC_ENDPOINT,
     BridgeClientError,
@@ -34,11 +46,11 @@ class BridgeSyncState:
     """A collection of query results fetched from one Bridge session."""
 
     session_id: int
-    timer_state: common_pb2.TimerState
-    attempt: common_pb2.AttemptState
-    run: run_pb2.RunState
-    context_state: common_pb2.ContextState
-    completed_count: common_pb2.CompletedCount | None = None
+    timer_state: TimerState
+    attempt: AttemptState
+    run: RunState
+    context_state: ContextState
+    completed_count: CompletedCount | None = None
 
 
 def _synchronize_rpc(rpc: BridgeRpcClient, *, include_completed_count: bool) -> BridgeSyncState:
@@ -85,8 +97,8 @@ def _synchronize_rpc(rpc: BridgeRpcClient, *, include_completed_count: bool) -> 
     )
 
 
-class BridgeClient(Iterator[common_pb2.BridgeEvent]):
-    """Integrated synchronous client for queries, controls, and v3 events.
+class BridgeClient(BridgeApi, Iterator[BridgeEvent]):
+    """Integrated synchronous client for queries, controls, and v4 events.
 
     This class is single-threaded and keeps event continuity and RPC session checks
     alongside its two low-level WebSocket clients.
@@ -212,7 +224,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             return
         self._observe_rpc_session()
 
-    def request(self, request: bridge_pb2.Request) -> bridge_pb2.Response:
+    def request(self, request: RpcRequest) -> SuccessResponse[RpcResult]:
         self._ensure_open()
         self._ensure_healthy()
         rpc = self.rpc
@@ -223,79 +235,6 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             raise
         self._observe_rpc_session()
         return response
-
-    def get_timer_state(self) -> common_pb2.TimerState:
-        return self.request(
-            bridge_pb2.Request(get_timer_state=bridge_pb2.GetTimerStateRequest())
-        ).get_timer_state.timer_state
-
-    def get_run(self) -> run_pb2.RunState:
-        return self.request(bridge_pb2.Request(get_run=bridge_pb2.GetRunRequest())).get_run.run
-
-    def get_attempt(self) -> common_pb2.AttemptState:
-        return self.request(
-            bridge_pb2.Request(get_attempt=bridge_pb2.GetAttemptRequest())
-        ).get_attempt.attempt
-
-    def get_context_state(self) -> common_pb2.ContextState:
-        return self.request(
-            bridge_pb2.Request(get_context_state=bridge_pb2.GetContextStateRequest())
-        ).get_context_state.context_state
-
-    def get_completed_count(self) -> common_pb2.CompletedCount:
-        return self.request(
-            bridge_pb2.Request(get_completed_count=bridge_pb2.GetCompletedCountRequest())
-        ).get_completed_count.completed_count
-
-    def timer_operation(
-        self, operation: common_pb2.TimerOperationType
-    ) -> common_pb2.OperationResponse:
-        return self.request(
-            bridge_pb2.Request(
-                timer_operation=bridge_pb2.TimerOperationRequest(operation=operation)
-            )
-        ).operation
-
-    def game_time_operation(
-        self, operation: common_pb2.GameTimeOperationType, *, ticks: int | None = None
-    ) -> common_pb2.OperationResponse:
-        operation_request = bridge_pb2.GameTimeOperationRequest(operation=operation)
-        if ticks is not None:
-            operation_request.ticks = ticks
-        return self.request(bridge_pb2.Request(game_time_operation=operation_request)).operation
-
-    def start(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_START)
-
-    def split(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_SPLIT)
-
-    def skip(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_SKIP)
-
-    def undo(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_UNDO)
-
-    def reset(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_RESET)
-
-    def pause(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_PAUSE)
-
-    def resume(self) -> common_pb2.OperationResponse:
-        return self.timer_operation(common_pb2.TIMER_RESUME)
-
-    def initialize_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.INITIALIZE)
-
-    def set_game_time_ticks(self, ticks: int) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.SET, ticks=ticks)
-
-    def pause_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.GAME_TIME_PAUSE)
-
-    def resume_game_time(self) -> common_pb2.OperationResponse:
-        return self.game_time_operation(common_pb2.GAME_TIME_RESUME)
 
     def synchronize(self, *, include_completed_count: bool = False) -> BridgeSyncState:
         """Fetch query results and verify every response belongs to one session."""
@@ -326,7 +265,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
         self._recovery_state = BridgeRecoveryState.HEALTHY
         return state
 
-    def receive(self, *, timeout_ms: int | None = None) -> common_pb2.BridgeEvent | None:
+    def receive(self, *, timeout_ms: int | None = None) -> BridgeEvent | None:
         self._ensure_open()
         self._ensure_healthy()
         try:
@@ -340,8 +279,6 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
             raise
         if event is None:
             return None
-        if event.session_id == 0:
-            self._raise_reconnect("Bridge event has an invalid zero session ID")
         if self._known_rpc_session_id and event.session_id != self._known_rpc_session_id:
             self._raise_reconnect(
                 f"Event session {event.session_id} does not match RPC session "
@@ -352,37 +289,11 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
                 f"Event session changed from {self._event_session_id} to {event.session_id}"
             )
         if self._last_event_sequence is not None:
-            expected = self._last_event_sequence + 1
+            expected = self._last_event_sequence % UINT32_MAX + 1
             if event.event_sequence != expected:
                 self._raise_resync(
                     f"Event sequence gap: expected {expected}, got {event.event_sequence}"
                 )
-
-        known_types = {
-            common_pb2.EVENT_TIMER_STARTED,
-            common_pb2.EVENT_TIMER_SPLIT,
-            common_pb2.EVENT_TIMER_SKIPPED,
-            common_pb2.EVENT_TIMER_UNDO,
-            common_pb2.EVENT_TIMER_RESET,
-            common_pb2.EVENT_TIMER_PHASE_CHANGED,
-            common_pb2.EVENT_RUN_CHANGED,
-            common_pb2.EVENT_CONTEXT_CHANGED,
-        }
-        if event.type not in known_types:
-            self._raise_resync(f"Unknown Bridge event type: {event.type}")
-        timer_event_types = {
-            common_pb2.EVENT_TIMER_STARTED,
-            common_pb2.EVENT_TIMER_SPLIT,
-            common_pb2.EVENT_TIMER_SKIPPED,
-            common_pb2.EVENT_TIMER_UNDO,
-            common_pb2.EVENT_TIMER_PHASE_CHANGED,
-        }
-        if event.type in timer_event_types and not event.HasField("timer_state"):
-            if self._recovery_state is not BridgeRecoveryState.RECONNECT_REQUIRED:
-                self._recovery_state = BridgeRecoveryState.RESYNC_REQUIRED
-            raise BridgeProtocolError(
-                f"Timer event {event.type} is missing its required timer_state"
-            )
 
         self._event_session_id = event.session_id
         self._last_event_sequence = event.event_sequence
@@ -391,7 +302,7 @@ class BridgeClient(Iterator[common_pb2.BridgeEvent]):
     def __iter__(self) -> Self:
         return self
 
-    def __next__(self) -> common_pb2.BridgeEvent:
+    def __next__(self) -> BridgeEvent:
         while (event := self.receive()) is None:
             pass
         return event
