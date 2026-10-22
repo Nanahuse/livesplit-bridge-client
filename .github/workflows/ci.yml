@@ -39,7 +39,7 @@ jobs:
         run: uv init --bare --no-workspace .tmp/test-project
 
       - name: Install library with uv add
-        run: uv add --project .tmp/test-project . 'pytest>=8,<10' 'jsonschema>=4.23,<5'
+        run: uv add --project .tmp/test-project . 'pytest>=8,<10'
 
       - name: Verify installed library
         run: uv run --project .tmp/test-project python -c "import livesplit_bridge as b; assert 'site-packages' in b.__file__, b.__file__"
@@ -75,7 +75,7 @@ jobs:
       - name: Sync quality dependencies
         run: uv sync --group dev --no-install-project
 
-      - name: Verify pinned JSON schemas
+      - name: Verify generated protocol models
         run: |
           uv run tools/update_protocol.py --check
           git diff --exit-code

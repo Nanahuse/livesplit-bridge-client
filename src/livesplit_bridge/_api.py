@@ -76,7 +76,11 @@ class BridgeApi(ABC):
             if ticks is not None:
                 raise ValueError("ticks are only allowed for set")
             params = GameControlParams.model_validate({"operation": operation.value})
-        self.request(GameTimeRequest(request_id=0, method="game_time_operation", params=params))
+        self.request(
+            GameTimeRequest.model_validate(
+                {"request_id": 0, "method": "game_time_operation", "params": params}
+            )
+        )
 
     def start(self) -> None:
         self.timer_operation(TimerOperation.START)

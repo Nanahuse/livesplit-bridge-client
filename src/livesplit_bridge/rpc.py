@@ -148,9 +148,10 @@ class BridgeRpcClient(BridgeApi):
 
         request_id = self._next_request_id
         # Revalidate caller-owned models too: Pydantic models can be mutated after creation.
-        request = _REQUEST.validate_python(request.model_dump()).model_copy(
-            update={"request_id": request_id}
-        )
+        request = _REQUEST.validate_python(request.model_dump())
+        data = request.model_dump()
+        data["request_id"] = request_id
+        request = _REQUEST.validate_python(data)
         self._next_request_id = (request_id + 1) & UINT32_MAX
 
         socket = self._socket

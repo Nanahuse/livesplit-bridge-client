@@ -14,6 +14,8 @@ from pathlib import Path
 REQUIRED_SUFFIXES = (
     "livesplit_bridge/__init__.py",
     "livesplit_bridge/models.py",
+    "livesplit_bridge/_generated/__init__.py",
+    "livesplit_bridge/_generated/protocol.py",
     "livesplit_bridge/_api.py",
     "livesplit_bridge/_json.py",
     "livesplit_bridge/rpc.py",
@@ -30,18 +32,15 @@ def verify(entries: list[str], archive: Path) -> None:
     forbidden = ("_pb2.py", "_pb2.pyi", ".proto", "uv.lock", "livesplit_bridge/protocol.py")
     if any(entry.endswith(forbidden) or "livesplit/bridge/" in entry for entry in entries):
         raise RuntimeError(f"obsolete protocol code or lockfile was included in {archive.name}")
-    if archive.name.endswith(".whl"):
-        if any("schemas/" in entry for entry in entries):
-            raise RuntimeError("Development schemas must not be included in the runtime wheel")
-    else:
+    if any("schemas/" in entry or entry.endswith(".schema.json") for entry in entries):
+        raise RuntimeError(f"A JSON schema was included in {archive.name}")
+    if not archive.name.endswith(".whl"):
         required = (
-            "schemas/v4/rpc-request.schema.json",
-            "schemas/v4/rpc-response.schema.json",
-            "schemas/v4/bridge-event.schema.json",
             "protocol-source.json",
             "tests/fixtures/csharp-serialized-cases.json",
             "tests/fixtures/validation-cases.json",
             "tools/update_protocol.py",
+            "tools/protocol_names.json",
             "tools/run_integration.py",
             "tools/verify_distributions.py",
         )
@@ -69,8 +68,11 @@ def main() -> int:
         requirements = Parser().parsestr(metadata).get_all("Requires-Dist", [])
         if not any(requirement.startswith("pydantic") for requirement in requirements):
             raise RuntimeError("The wheel is missing the Pydantic runtime dependency")
-        if any("protobuf" in item.lower() or "grpcio" in item.lower() for item in requirements):
-            raise RuntimeError("An obsolete protocol dependency is still present")
+        development = ("protobuf", "grpcio", "datamodel-code-generator", "jsonschema")
+        if any(name in item.lower() for item in requirements for name in development):
+            raise RuntimeError(
+                "A development or obsolete protocol dependency is present at runtime"
+            )
     with tarfile.open(sdists[0], "r:gz") as archive:
         verify(archive.getnames(), sdists[0])
     return 0

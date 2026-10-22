@@ -18,7 +18,7 @@ Protocol = "https://github.com/Nanahuse/LiveSplit.Bridge"
 [dependency-groups]
 dev = [
     "hatchling>=1.27,<2",
-    "jsonschema>=4.23,<5",
+    "datamodel-code-generator==0.86.0",
     "pytest>=8,<10",
     "ruff==0.16.4",
     "ty==0.0.74",
@@ -34,10 +34,10 @@ packages = ["src/livesplit_bridge"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/protocol-source.json",
-    "/schemas",
     "/src",
     "/tests",
     "/tools/update_protocol.py",
+    "/tools/protocol_names.json",
     "/tools/verify_distributions.py",
     "/tools/run_integration.py",
     "/LICENSE",

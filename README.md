@@ -224,20 +224,44 @@ with BridgeEventSubscriber(receive_timeout_ms=5000) as events:
 
 ## Schema と開発
 
-Protocol の正本は Bridge の C# DTO と、そこから生成された
-[`公式 JSON Schema`](https://github.com/Nanahuse/LiveSplit.Bridge/tree/v4/schemas/v4) です。
-`protocol-source.json` が参照コミットを固定します。
+通信仕様の正本は LiveSplit.Bridge の C# DTO です。そこから生成された公式 JSON Schema を入力に、
+`datamodel-code-generator==0.86.0` で Pydantic v2 の通信モデル・enum を生成します。
+`protocol-source.json` が参照する Bridge コミットを固定しています。
 
 ```powershell
 uv run tools/update_protocol.py
 uv run tools/update_protocol.py --check
+# 固定コミットのローカル checkout を利用する場合
+uv run tools/update_protocol.py --source C:/path/to/LiveSplit.Bridge
 ```
 
-3 つの Schema を `schemas/v4/` へ同期し、公式の不正入力 fixture も更新します。
-実行時は Pydantic モデルで検証し、Schema や `jsonschema` は runtime 依存に含めません。
-モデルは `src/livesplit_bridge/models.py` で明示的に管理し、独自の型生成処理はありません。
-契約テストは公式 C# シリアライズ結果・不正入力・各階層の必須フィールド・null・enum・整数境界を
-公式 Schema と照合します。
+生成時に固定コミットの `rpc-request.schema.json`、`rpc-response.schema.json`、
+`bridge-event.schema.json` を一時ディレクトリに取得し、生成完了後に削除します。
+Schema 自体は Git 管理せず、wheel / sdist にも含めません。通常の単体テストはネットワーク不要です。
+生成器は開発依存であり、実行時の依存は Pydantic と WebSocket ライブラリだけです。
+
+生成コードは `src/livesplit_bridge/_generated/` にコミットします。**手動編集しないでください。**
+CI は固定コミットから再生成して内容を比較し、ファイルの欠落・追加や差分があれば失敗します。
+生成器・Ruff のバージョン、Python 3.11 / Pydantic 2.11 向けの設定、タイムスタンプなしの出力を固定します。
+
+公式 Schema のルート `oneOf` と各分岐を維持して生成します。`tools/protocol_names.json` は
+Schema 内の位置に Python の名前を付けるメタデータのみで、フィールドや型・制約値は定義しません。
+生成前に参照を解決し、既存 Schema の `if/then` が表す null 禁止条件を等価な型へ整形します。
+未対応の条件は黙って無視せず、生成を失敗させます。
+
+`src/livesplit_bridge/models.py` は公開名と薄い変換層です。通信フィールド・制約・enum 値は生成コードが持ち、
+この層は `oneOf` のラッパーを平坦に利用するためのプロパティと、Base64 / PNG bytes の変換を提供します。
+WebSocket 通信、ID 採番、メソッドと結果型の対応、Session / sequence と復旧処理はクライアント側で管理します。
+
+Bridge を更新するときは、次の順で作業します。
+
+1. `protocol-source.json` の `revision` を対象の確定済みコミット SHA に更新します。
+2. モデルを再生成します。Schema の構造が変わり命名位置を調整する必要があれば、名前のメタデータを更新します。
+3. 公式 C# シリアライズサンプルの fixture を更新し、通常テスト・実通信テストを実行します。
+4. `--check` と lint・型チェック・配布物検証を実行し、生成結果をコミットします。
+
+テストは公式 C# メッセージの受信、Python の Request 送信、不正な応答と復旧動作を直接検証します。
+Schema とモデルの受理判定を比較するテストはありません。
 
 ```powershell
 uv sync --group dev
@@ -263,4 +287,5 @@ uv run tools/run_integration.py --source C:/path/to/LiveSplit.Bridge
 画像なしの Run に加え、公式 TestHost の `--with-icons` オプションで生成した決定的な PNG を取得します。
 ゲームと Segment の PNG bytes・Segment 順・画像なしの `None` を確認し、実際に受信した JSON の
 UTF-8 バイト数が 64KiB を超えることと、取得後も同じ RPC 接続で Query・Control が成功することを検証します。
-Schema・fixture は sdist のみに含め、wheel は型付き client と runtime 依存だけを配布します。
+生成済みモデルは wheel / sdist の両方に含めます。C# fixture と生成ツールは sdist のみに含め、
+Schema のコピーと生成器の runtime 依存はどちらの配布物にも追加しません。

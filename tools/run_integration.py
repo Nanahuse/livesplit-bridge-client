@@ -29,7 +29,11 @@ def main() -> int:
     if not checkout.exists():
         run("git", "clone", "--no-checkout", source["repository"], str(checkout))
         run("git", "checkout", "--detach", source["revision"], cwd=checkout)
-    run(sys.executable, "tools/update_protocol.py", "--check", "--source", str(checkout))
+    revision = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=checkout, text=True
+    ).strip()
+    if revision != source["revision"]:
+        raise RuntimeError(f"Expected Bridge revision {source['revision']}, got {revision}")
     run("git", "submodule", "update", "--init", "--depth", "1", "external/LiveSplit", cwd=checkout)
     run(
         "git",

@@ -1,233 +1,184 @@
-"""Typed JSON v4 contracts, maintained against the pinned Bridge C# DTOs."""
+"""Stable public names and client conveniences over generated JSON wire models.
+
+No wire fields, enum values, or numeric constraints are defined here. Those are
+owned by the pinned C# DTOs and generated into _generated/protocol.py.
+"""
 
 from __future__ import annotations
 
 import base64
 import binascii
-from enum import StrEnum
-from typing import Annotated, Generic, Literal, Self, TypeVar
+from typing import Generic, Self, TypeVar, cast
 
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    PlainSerializer,
-    WithJsonSchema,
-    model_validator,
+from pydantic import RootModel, model_validator
+
+from ._generated import protocol as _wire
+from ._generated.protocol import (
+    AttemptSegment as AttemptSegment,
+)
+from ._generated.protocol import (
+    AttemptState as AttemptState,
+)
+from ._generated.protocol import (
+    BridgeError as BridgeError,
+)
+from ._generated.protocol import (
+    BridgeErrorCode as BridgeErrorCode,
+)
+from ._generated.protocol import (
+    ComparisonTime as ComparisonTime,
+)
+from ._generated.protocol import (
+    CompletedCount as CompletedCount,
+)
+from ._generated.protocol import (
+    ContextState as ContextState,
+)
+from ._generated.protocol import (
+    ErrorResponse as ErrorResponse,
+)
+from ._generated.protocol import (
+    EventType as EventType,
+)
+from ._generated.protocol import (
+    GameControlParams as GameControlParams,
+)
+from ._generated.protocol import (
+    GameSetParams as GameSetParams,
+)
+from ._generated.protocol import (
+    GameTimeOperation as GameTimeOperation,
+)
+from ._generated.protocol import (
+    QueryMethod as QueryMethod,
+)
+from ._generated.protocol import (
+    QueryRequest as QueryRequest,
+)
+from ._generated.protocol import (
+    RunMetadata as RunMetadata,
+)
+from ._generated.protocol import (
+    RunState as RunState,
+)
+from ._generated.protocol import (
+    SegmentInfo as SegmentInfo,
+)
+from ._generated.protocol import (
+    TimerOperation as TimerOperation,
+)
+from ._generated.protocol import (
+    TimerParams as TimerParams,
+)
+from ._generated.protocol import (
+    TimerPhase as TimerPhase,
+)
+from ._generated.protocol import (
+    TimerRequest as TimerRequest,
+)
+from ._generated.protocol import (
+    TimerState as TimerState,
+)
+from ._generated.protocol import (
+    TimeValue as TimeValue,
+)
+from ._generated.protocol import (
+    TimingMethod as TimingMethod,
 )
 
+# Counter arithmetic belongs to the transport; field constraints are generated.
 UINT32_MAX = 2**32 - 1
-UInt32 = Annotated[int, Field(ge=0, le=UINT32_MAX)]
-NonZeroUInt32 = Annotated[int, Field(ge=1, le=UINT32_MAX)]
-Int32 = Annotated[int, Field(ge=-(2**31), le=2**31 - 1)]
-Ticks = Annotated[int, Field(ge=-(2**63), le=2**63 - 1)]
+_Root = TypeVar("_Root")
+_UNSET = object()
 
 
-class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class _View(RootModel[_Root]):
+    """Accept the existing flat keyword constructor while validation stays generated."""
+
+    def __init__(self, root: object = _UNSET, **fields: object) -> None:
+        if root is _UNSET:
+            root = fields
+        elif fields:
+            raise ValueError("Pass either a root value or keyword fields")
+        self.__pydantic_validator__.validate_python(root, self_instance=self)
 
 
-class TimerPhase(StrEnum):
-    UNSPECIFIED = "unspecified"
-    NOT_RUNNING = "not_running"
-    RUNNING = "running"
-    PAUSED = "paused"
-    ENDED = "ended"
-
-
-class TimingMethod(StrEnum):
-    UNSPECIFIED = "unspecified"
-    REAL_TIME = "real_time"
-    GAME_TIME = "game_time"
-
-
-class BridgeErrorCode(StrEnum):
-    INVALID_REQUEST = "invalid_request"
-    INVALID_ARGUMENT = "invalid_argument"
-    OPERATION_FAILED = "operation_failed"
-    INTERNAL_ERROR = "internal_error"
-    PERMISSION_DENIED = "permission_denied"
-
-
-class QueryMethod(StrEnum):
-    GET_TIMER_STATE = "get_timer_state"
-    GET_RUN = "get_run"
-    GET_RUN_ICONS = "get_run_icons"
-    GET_ATTEMPT = "get_attempt"
-    GET_CONTEXT_STATE = "get_context_state"
-    GET_COMPLETED_COUNT = "get_completed_count"
-
-
-class TimerOperation(StrEnum):
-    START = "start"
-    SPLIT = "split"
-    SKIP = "skip"
-    UNDO = "undo"
-    RESET = "reset"
-    PAUSE = "pause"
-    RESUME = "resume"
-
-
-class GameTimeOperation(StrEnum):
-    INITIALIZE = "initialize"
-    SET = "set"
-    PAUSE = "pause"
-    RESUME = "resume"
-
-
-class EventType(StrEnum):
-    TIMER_STARTED = "timer_started"
-    TIMER_SPLIT = "timer_split"
-    TIMER_SKIPPED = "timer_skipped"
-    TIMER_UNDO = "timer_undo"
-    TIMER_RESET = "timer_reset"
-    TIMER_PHASE_CHANGED = "timer_phase_changed"
-    RUN_CHANGED = "run_changed"
-    CONTEXT_CHANGED = "context_changed"
-
-
-class TimerState(_Model):
-    phase: TimerPhase = Field(strict=False)
-    split_index: Int32
-    real_time_ticks: Ticks
-    game_time_ticks: Ticks | None
-    is_game_time_initialized: bool
-    is_game_time_paused: bool
-
-
-class TimeValue(_Model):
-    real_time_ticks: Ticks | None
-    game_time_ticks: Ticks | None
-
-
-class AttemptSegment(_Model):
-    index: UInt32
-    split_time: TimeValue
-    custom_variables: dict[str, str]
-
-
-class AttemptState(_Model):
-    attempt_count: UInt32
-    segments: list[AttemptSegment]
-
-
-class CompletedCount(_Model):
-    completed_count: UInt32
-
-
-class ContextState(_Model):
-    current_timing_method: TimingMethod = Field(strict=False)
-    current_comparison: str
-    custom_variables: dict[str, str]
-
-
-class ComparisonTime(_Model):
-    name: str
-    time: TimeValue
-
-
-class SegmentInfo(_Model):
-    index: UInt32
-    name: str
-    comparisons: list[ComparisonTime]
-    best_segment_time: TimeValue
-
-
-class RunMetadata(_Model):
-    run_id: str | None
-    platform_name: str | None
-    region_name: str | None
-    uses_emulator: bool
-    variables: dict[str, str]
-
-
-class RunState(_Model):
-    game_name: str
-    category_name: str
-    offset_ticks: Ticks
-    file_path: str | None
-    layout_path: str | None
-    metadata: RunMetadata | None
-    comparisons: list[str]
-    segments: list[SegmentInfo]
-
-
-def _decode_icon(value: object) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    if not isinstance(value, str):
-        raise ValueError("An icon must be a Base64 string")
+def _decode_icon(value: str | None) -> bytes | None:
+    if value is None:
+        return None
     try:
         return base64.b64decode(value, validate=True)
     except (ValueError, binascii.Error) as error:
         raise ValueError("An icon must contain valid Base64") from error
 
 
-_Icon = Annotated[
-    bytes,
-    BeforeValidator(_decode_icon),
-    PlainSerializer(lambda value: base64.b64encode(value).decode("ascii"), return_type=str),
-    WithJsonSchema({"type": "string"}),
-]
+class RunIcons(_View[_wire.RunIcons]):
+    """Expose decoded PNG bytes without changing the generated wire contract."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def encode_input_bytes(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
 
-class RunIcons(_Model):
-    """Decoded PNG bytes; segment positions, including absent icons, are preserved."""
+        def encode(icon: object) -> object:
+            return base64.b64encode(icon).decode("ascii") if isinstance(icon, bytes) else icon
 
-    game_icon: _Icon | None
-    segment_icons: list[_Icon | None]
-
-
-class BridgeError(_Model):
-    code: BridgeErrorCode = Field(strict=False)
-    message: str
-
-
-class BridgeEvent(_Model):
-    session_id: NonZeroUInt32
-    event_sequence: NonZeroUInt32
-    type: EventType = Field(strict=False)
-    timer_state: TimerState | None
+        data = dict(value)
+        if "game_icon" in data:
+            data["game_icon"] = encode(data["game_icon"])
+        if isinstance(data.get("segment_icons"), list):
+            data["segment_icons"] = [encode(icon) for icon in data["segment_icons"]]
+        return data
 
     @model_validator(mode="after")
-    def check_timer_state(self) -> Self:
-        if self.type in (EventType.RUN_CHANGED, EventType.CONTEXT_CHANGED):
-            if self.timer_state is not None:
-                raise ValueError("Changed events require timer_state: null")
-        elif self.type != EventType.TIMER_RESET and self.timer_state is None:
-            raise ValueError("Timer events require a non-null timer_state")
+    def validate_base64(self) -> Self:
+        _decode_icon(self.root.game_icon)
+        for icon in self.root.segment_icons:
+            _decode_icon(icon)
         return self
 
+    @property
+    def game_icon(self) -> bytes | None:
+        return _decode_icon(self.root.game_icon)
 
-class QueryRequest(_Model):
-    request_id: UInt32
-    method: QueryMethod = Field(strict=False)
-
-
-class TimerParams(_Model):
-    operation: TimerOperation = Field(strict=False)
-
-
-class TimerRequest(_Model):
-    request_id: UInt32
-    method: Literal["timer_operation"]
-    params: TimerParams
+    @property
+    def segment_icons(self) -> list[bytes | None]:
+        return [_decode_icon(icon) for icon in self.root.segment_icons]
 
 
-class GameControlParams(_Model):
-    operation: Literal["initialize", "pause", "resume"]
+class BridgeEvent(_View[_wire.BridgeEvent]):
+    """Keep flat Event access while the generated model owns the oneOf branches."""
+
+    @property
+    def session_id(self) -> int:
+        return self.root.root.session_id
+
+    @property
+    def event_sequence(self) -> int:
+        return self.root.root.event_sequence
+
+    @property
+    def type(self) -> EventType:
+        return EventType(self.root.root.type)
+
+    @property
+    def timer_state(self) -> TimerState | None:
+        return self.root.root.timer_state
 
 
-class GameSetParams(_Model):
-    operation: Literal["set"]
-    ticks: Ticks
+class GameTimeRequest(_View[_wire.GameTimeRequest]):
+    @property
+    def request_id(self) -> int:
+        return self.root.root.request_id
 
+    @property
+    def method(self) -> str:
+        return self.root.root.method
 
-class GameTimeRequest(_Model):
-    request_id: UInt32
-    method: Literal["game_time_operation"]
-    params: Annotated[GameControlParams | GameSetParams, Field(discriminator="operation")]
+    @property
+    def params(self) -> GameControlParams | GameSetParams:
+        return self.root.root.params
 
 
 RpcRequest = QueryRequest | TimerRequest | GameTimeRequest
@@ -235,16 +186,28 @@ RpcResult = TimerState | RunState | RunIcons | AttemptState | ContextState | Com
 _Result = TypeVar("_Result")
 
 
-class SuccessResponse(_Model, Generic[_Result]):
-    request_id: UInt32
-    session_id: NonZeroUInt32
-    result: _Result
+class SuccessResponse(_View[_wire.SuccessResponse], Generic[_Result]):
+    @model_validator(mode="after")
+    def validate_icons(self) -> Self:
+        value = self.root.root.result
+        if isinstance(value, _wire.RunIcons):
+            RunIcons.model_validate(value)
+        return self
 
+    @property
+    def request_id(self) -> int:
+        return self.root.root.request_id
 
-class ErrorResponse(_Model):
-    request_id: UInt32
-    session_id: NonZeroUInt32
-    error: BridgeError
+    @property
+    def session_id(self) -> int:
+        return self.root.root.session_id
+
+    @property
+    def result(self) -> _Result:
+        value = self.root.root.result
+        if isinstance(value, _wire.RunIcons):
+            return cast(_Result, RunIcons.model_validate(value))
+        return cast(_Result, value)
 
 
 RpcResponse = SuccessResponse[RpcResult] | ErrorResponse
