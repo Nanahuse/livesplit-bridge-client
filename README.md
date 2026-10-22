@@ -260,4 +260,7 @@ uv run tools/run_integration.py --source C:/path/to/LiveSplit.Bridge
 ```
 
 実通信テストでは Query、全 Control、Events、切断後の復旧、権限エラーと C# サンプルの一致を検証します。
+画像なしの Run に加え、公式 TestHost の `--with-icons` オプションで生成した決定的な PNG を取得します。
+ゲームと Segment の PNG bytes・Segment 順・画像なしの `None` を確認し、実際に受信した JSON の
+UTF-8 バイト数が 64KiB を超えることと、取得後も同じ RPC 接続で Query・Control が成功することを検証します。
 Schema・fixture は sdist のみに含め、wheel は型付き client と runtime 依存だけを配布します。

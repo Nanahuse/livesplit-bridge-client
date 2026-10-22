@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
 import socket
+import struct
 import subprocess
 import threading
 import time
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import websocket
 
 from livesplit_bridge import (
     BridgeClient,
@@ -28,7 +31,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def endpoints() -> Iterator[tuple[str, str]]:
+def endpoints(request: pytest.FixtureRequest) -> Iterator[tuple[str, str]]:
     executable = os.environ.get("BRIDGE_TEST_HOST")
     if not executable:
         pytest.skip("Run uv run tools/run_integration.py to build the pinned official v4 TestHost")
@@ -36,7 +39,7 @@ def endpoints() -> Iterator[tuple[str, str]]:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     process = subprocess.Popen(
-        [executable, "--port", str(port)],
+        [executable, "--port", str(port), *getattr(request, "param", ())],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -141,6 +144,60 @@ def test_real_v4_queries_controls_and_events(endpoints: tuple[str, str]) -> None
         assert client.reconnect().session_id == initial.session_id
         client.start()
         wait_event(client, EventType.TIMER_STARTED)
+
+
+@pytest.mark.parametrize("endpoints", [("--with-icons",)], indirect=True, ids=["with-icons"])
+def test_real_run_icons_over_64kib_and_continued_rpc(
+    endpoints: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with BridgeClient(*endpoints) as client:
+        initial = client.synchronize()
+        assert [segment.name for segment in initial.run.segments] == ["First", "Second"]
+        rpc_socket = client.rpc._socket
+        assert rpc_socket is not None
+        receive = rpc_socket.recv_data
+        responses: list[tuple[int, bytes | str]] = []
+
+        def capture_response(*args: Any, **kwargs: Any) -> tuple[int, Any]:
+            opcode, payload = receive(*args, **kwargs)
+            responses.append((opcode, payload))
+            return opcode, payload
+
+        # Observe the actual response consumed by get_run_icons(), including Text message
+        # reassembly, rather than estimating its size from decoded image bytes.
+        with monkeypatch.context() as capture:
+            capture.setattr(rpc_socket, "recv_data", capture_response)
+            icons = client.get_run_icons()
+        assert len(responses) == 1
+        opcode, payload = responses[0]
+        assert opcode == websocket.ABNF.OPCODE_TEXT
+        wire_bytes = payload.encode("utf-8") if isinstance(payload, str) else payload
+        assert len(wire_bytes) > 64 * 1024, f"Response was only {len(wire_bytes)} UTF-8 bytes"
+        envelope = json.loads(wire_bytes)
+        assert envelope["session_id"] == initial.session_id
+        wire_icons = envelope["result"]
+
+        game_png = icons.game_icon
+        first_png, second_png = icons.segment_icons
+        for png, dimensions in ((game_png, (256, 256)), (first_png, (16, 16))):
+            assert isinstance(png, bytes)
+            assert png.startswith(b"\x89PNG\r\n\x1a\n")
+            assert png[12:16] == b"IHDR"
+            assert struct.unpack(">II", png[16:24]) == dimensions
+        assert game_png == base64.b64decode(wire_icons["game_icon"], validate=True)
+        assert first_png == base64.b64decode(wire_icons["segment_icons"][0], validate=True)
+        assert second_png is None
+        assert wire_icons["segment_icons"][1] is None
+
+        assert client.get_run() == initial.run
+        assert client.start() is None
+        wait_event(client, EventType.TIMER_STARTED)
+        assert client.get_timer_state().phase is TimerPhase.RUNNING
+        assert client.rpc._socket is rpc_socket
+        assert rpc_socket.connected
+        assert client.session_id == initial.session_id
+        assert client.recovery_state is BridgeRecoveryState.HEALTHY
 
 
 def test_real_transport_recovery_without_control_replay(endpoints: tuple[str, str]) -> None:
