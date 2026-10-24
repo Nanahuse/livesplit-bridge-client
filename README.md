@@ -244,20 +244,28 @@ Schema 自体は Git 管理せず、wheel / sdist にも含めません。通常
 CI は固定コミットから再生成して内容を比較し、ファイルの欠落・追加や差分があれば失敗します。
 生成器・Ruff のバージョン、Python 3.11 / Pydantic 2.11 向けの設定、タイムスタンプなしの出力を固定します。
 
-公式 Schema のルート `oneOf` と各分岐を維持して生成します。`tools/protocol_names.json` は
-Schema 内の位置に Python の名前を付けるメタデータのみで、フィールドや型・制約値は定義しません。
-生成前に参照を解決し、既存 Schema の `if/then` が表す null 禁止条件を等価な型へ整形します。
-未対応の条件は黙って無視せず、生成を失敗させます。
+3つの公式 Schema の名前付き `$defs` を統合し、同名定義の内容が異なる場合は失敗します。
+各ルートの `oneOf` と `$ref` を維持し、`--use-title-as-name` と `--use-type-alias` で
+単一モジュールを生成します。`TimerState` などの共有型は重複しません。
+独自の参照解決・DTO 抽出・命名設定はありません。
+
+唯一の補正は `RunIcons.segment_icons` の既存 `if/then` 条件です。Bridge が使う
+JsonSchema.Net.Generation 7.3.11 では標準 nullable 属性だけで配列と要素の null 可否を分離できず、
+datamodel-code-generator はこの条件を型へ反映しません。そのため、この条件に限り配列自体の
+null を型から除き、要素の null は維持します。条件が想定と異なる場合は生成を失敗させます。
+Bridge 側が直接的な型を出力するようになれば、この補正は不要になります。
 
 `src/livesplit_bridge/models.py` は公開名と薄い変換層です。通信フィールド・制約・enum 値は生成コードが持ち、
-この層は `oneOf` のラッパーを平坦に利用するためのプロパティと、Base64 / PNG bytes の変換を提供します。
+この層は生成済みの enum・Literal・DTO から公開 API 用の enum と union を組み合わせ、
+平坦に利用するためのプロパティと、Base64 / PNG bytes の変換を提供します。
 WebSocket 通信、ID 採番、メソッドと結果型の対応、Session / sequence と復旧処理はクライアント側で管理します。
 
 Bridge を更新するときは、次の順で作業します。
 
 1. `protocol-source.json` の `revision` を対象の確定済みコミット SHA に更新します。
-2. モデルを再生成します。Schema の構造が変わり命名位置を調整する必要があれば、名前のメタデータを更新します。
-3. 公式 C# シリアライズサンプルの fixture を更新し、通常テスト・実通信テストを実行します。
+2. モデルを再生成します。公開名が変わる場合は `models.py` の薄い変換層を調整します。
+3. 公式 C# シリアライズサンプルの一致を確認し、通信内容が変わった場合だけ fixture を更新します。
+   通常テスト・実通信テストを実行します。
 4. `--check` と lint・型チェック・配布物検証を実行し、生成結果をコミットします。
 
 単体テストは、代表的な公式 C# メッセージの受信、Request の送信、例外化・接続破棄・復旧、PNG 変換など、

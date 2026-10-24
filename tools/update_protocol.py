@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import subprocess
 import sys
@@ -34,156 +33,44 @@ def run(command: list[str], *, cwd: Path) -> str:
     return result.stdout
 
 
-def resolve(node: Any, scope: dict[str, Any]) -> Any:
-    """Inline document-local references, respecting each nested schema's $id scope."""
-    if isinstance(node, list):
-        return [resolve(value, scope) for value in node]
-    if not isinstance(node, dict):
-        return node
-    if "$id" in node:
-        scope = node
-    if "$ref" in node:
-        reference = node["$ref"]
-        if not reference.startswith("#/") or set(node) != {"$ref"}:
-            raise ValueError(f"Unsupported upstream reference: {reference}")
-        target = scope
-        for part in reference[2:].split("/"):
-            target = target[part.replace("~1", "/").replace("~0", "~")]
-        return resolve(target, scope)
-    return {key: resolve(value, scope) for key, value in node.items() if key != "$defs"}
+def normalize_run_icons(definitions: dict[str, Any]) -> None:
+    """Express only RunIcons' null-array exclusion for codegen's unsupported if/then."""
+    icons = definitions["RunIcons"]
+    if "if" not in icons and "then" not in icons:
+        return
+    if (
+        icons.get("if")
+        != {"properties": {"segment_icons": {"const": None}}, "required": ["segment_icons"]}
+        or icons.get("then") != {"properties": {"segment_icons": {"$ref": "#/$defs/ListOfString"}}}
+        or definitions["ListOfString"].get("type") != "array"
+        or icons["properties"]["segment_icons"].get("type") != ["null", "array"]
+        or "else" in icons
+    ):
+        raise ValueError("Unsupported RunIcons conditional; review the upstream schema")
+    icons["properties"]["segment_icons"]["type"] = "array"
+    del icons["if"], icons["then"]
 
 
-def normalize(node: Any) -> Any:
-    """Resolve the upstream null-exclusion idiom; never invent fields or constraints."""
-    if isinstance(node, list):
-        return [normalize(value) for value in node]
-    if not isinstance(node, dict):
-        return node
-    node = copy.deepcopy(node)
-    if "$ref" in node:
-        raise ValueError("Upstream references need resolution before extracting named definitions")
-    if "if" in node or "then" in node or "else" in node:
-        # if a required property is null, then it must have a non-null type. That
-        # branch is impossible, so remove null from the property's allowed types.
-        # This preserves nullable ARRAY ITEMS, unlike intersecting the whole 'then'.
-        condition, consequence = node.get("if", {}), node.get("then", {})
-        keys = list(condition.get("properties", {}))
-        if len(keys) != 1:
-            raise ValueError("Unsupported upstream conditional")
-        key = keys[0]
-        expected = {"properties": {key: {"const": None}}, "required": [key]}
-        target = consequence.get("properties", {}).get(key, {})
-        target_type = target.get("type")
-        types = node.get("properties", {}).get(key, {}).get("type")
-        if (
-            condition != expected
-            or set(consequence) != {"properties"}
-            or set(consequence["properties"]) != {key}
-            or "else" in node
-            or not isinstance(target_type, str)
-            or target_type == "null"
-            or not isinstance(types, list)
-            or set(types) != {"null", target_type}
-        ):
-            raise ValueError("Unsupported upstream conditional; do not silently drop constraints")
-        node["properties"][key]["type"] = target_type
-        del node["if"], node["then"]
-    # Enums in the C# schemas omit a redundant JSON type. Supply it so codegen
-    # emits StrEnum rather than an untyped Enum. Values still come only from C#.
-    if "enum" in node and all(isinstance(value, str) for value in node["enum"]):
-        node.setdefault("type", "string")
-    return {key: normalize(value) for key, value in node.items() if key not in ("$id", "$schema")}
-
-
-def prepare(schemas: dict[str, Any]) -> dict[str, Any]:
-    names = json.loads((PROJECT_ROOT / "tools/protocol_names.json").read_text())
+def combine(schemas: dict[str, Any]) -> dict[str, Any]:
+    """Merge named definitions and preserve each official root union."""
     definitions: dict[str, Any] = {}
-    for filename, schema in schemas.items():
-        seen: set[str] = set()
-
-        def extract(value: Any, pointer: str = "") -> Any:
-            if isinstance(value, list):
-                return [extract(item, f"{pointer}/{i}") for i, item in enumerate(value)]
-            if not isinstance(value, dict):
-                return value
-            result = {key: extract(item, f"{pointer}/{key}") for key, item in value.items()}
-            name = names[filename].get(pointer)
-            if name is None:
-                return result
-            seen.add(pointer)
-            nullable = isinstance(result.get("type"), list) and "null" in result["type"]
-            if nullable:
-                kinds = [kind for kind in result["type"] if kind != "null"]
-                result["type"] = kinds[0] if len(kinds) == 1 else kinds
-            if name in definitions and definitions[name] != result:
-                raise ValueError(f"Named definitions disagree: {name} at {filename}{pointer}")
-            definitions[name] = result
-            reference = {"$ref": f"#/$defs/{name}"}
-            return {"anyOf": [reference, {"type": "null"}]} if nullable else reference
-
-        extract(normalize(resolve(schema, schema)))
-        if seen != set(names[filename]):
-            raise ValueError(f"Stale naming hints in {filename}: {set(names[filename]) - seen}")
-
-    def discriminator_values(branches: list[dict[str, Any]], field: str) -> list[str]:
-        values: list[str] = []
-        for branch in branches:
-            discriminator = branch["properties"][field]
-            for value in discriminator.get("enum", [discriminator.get("const")]):
-                if not isinstance(value, str):
-                    raise ValueError(f"Expected string discriminator: {field}")
-                if value not in values:
-                    values.append(value)
-        return values
-
-    # Public convenience enums are unions of the schema's discriminator values.
-    definitions["EventType"] = {
-        "type": "string",
-        "enum": discriminator_values(schemas["bridge-event.schema.json"]["oneOf"], "type"),
-    }
-    game_requests = [
-        variant
-        for variant in schemas["rpc-request.schema.json"]["oneOf"]
-        if variant["properties"]["method"].get("const") == "game_time_operation"
-    ]
-    definitions["GameTimeOperation"] = {
-        "type": "string",
-        "enum": discriminator_values(
-            [variant["properties"]["params"] for variant in game_requests], "operation"
-        ),
-    }
-    request_refs = definitions["RpcRequest"]["oneOf"]
-    definitions["GameTimeRequest"] = {
-        "oneOf": [
-            ref
-            for ref in request_refs
-            if definitions[ref["$ref"].rsplit("/", 1)[1]]["properties"]["method"].get("const")
-            == "game_time_operation"
-        ]
-    }
-    response_refs = definitions["RpcResponse"]["oneOf"]
-    definitions["SuccessResponse"] = {
-        "oneOf": [
-            ref
-            for ref in response_refs
-            if "result" in definitions[ref["$ref"].rsplit("/", 1)[1]]["properties"]
-        ]
-    }
+    roots = []
+    for schema in schemas.values():
+        for name, definition in schema["$defs"].items():
+            if name in definitions and definitions[name] != definition:
+                raise ValueError(f"Official definitions disagree: {name}")
+            definitions[name] = definition
+        name = schema["title"]
+        root = {key: value for key, value in schema.items() if key not in ("$schema", "$defs")}
+        if name in definitions:
+            raise ValueError(f"Root name conflicts with an official definition: {name}")
+        definitions[name] = root
+        roots.append({"$ref": f"#/$defs/{name}"})
+    normalize_run_icons(definitions)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": definitions,
-        "anyOf": [
-            {"$ref": f"#/$defs/{name}"}
-            for name in (
-                "RpcRequest",
-                "RpcResponse",
-                "BridgeEvent",
-                "EventType",
-                "GameTimeOperation",
-                "GameTimeRequest",
-                "SuccessResponse",
-            )
-        ],
+        "anyOf": roots,
     }
 
 
@@ -199,7 +86,7 @@ def generate(checkout: Path, revision: str, directory: Path) -> dict[str, str]:
         path.write_text(content, encoding="utf-8")
         schemas[name] = json.loads(content)
     prepared = directory / "protocol.schema.json"
-    prepared.write_text(json.dumps(prepare(schemas), indent=2), encoding="utf-8")
+    prepared.write_text(json.dumps(combine(schemas), indent=2), encoding="utf-8")
     # Give the supported Ruff formatters the same pinned project configuration.
     (directory / "pyproject.toml").write_text(
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
@@ -233,6 +120,8 @@ def generate(checkout: Path, revision: str, directory: Path) -> dict[str, str]:
             "int",
             "bool",
             "--field-constraints",
+            "--use-title-as-name",
+            "--use-type-alias",
             "--use-standard-collections",
             "--use-union-operator",
             "--use-annotated",

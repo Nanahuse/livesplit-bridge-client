@@ -37,7 +37,6 @@ include = [
     "/src",
     "/tests",
     "/tools/update_protocol.py",
-    "/tools/protocol_names.json",
     "/tools/verify_distributions.py",
     "/tools/run_integration.py",
     "/LICENSE",

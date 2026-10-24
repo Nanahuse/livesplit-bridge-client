@@ -89,10 +89,11 @@ def test_subscriber_exposes_official_csharp_event(
         {"game_icon": "not Base64!", "segment_icons": []},
         {"game_icon": None, "segment_icons": ["%%%%"]},
         {"game_icon": None, "segment_icons": ["é"]},
+        {"game_icon": None, "segment_icons": None},
     ],
-    ids=["game-icon", "segment-icon", "non-ascii-base64"],
+    ids=["game-icon", "segment-icon", "non-ascii-base64", "null-icon-array"],
 )
-def test_invalid_base64_discards_rpc_connection(
+def test_invalid_icons_discard_rpc_connection(
     monkeypatch: pytest.MonkeyPatch,
     payload: dict[str, Any],
 ) -> None:

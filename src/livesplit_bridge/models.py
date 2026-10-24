@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-from typing import Generic, Self, TypeVar, cast
+from enum import StrEnum
+from typing import Generic, Self, TypeVar, cast, get_args, get_type_hints
 
 from pydantic import RootModel, model_validator
 
@@ -38,16 +39,10 @@ from ._generated.protocol import (
     ErrorResponse as ErrorResponse,
 )
 from ._generated.protocol import (
-    EventType as EventType,
-)
-from ._generated.protocol import (
     GameControlParams as GameControlParams,
 )
 from ._generated.protocol import (
     GameSetParams as GameSetParams,
-)
-from ._generated.protocol import (
-    GameTimeOperation as GameTimeOperation,
 )
 from ._generated.protocol import (
     QueryMethod as QueryMethod,
@@ -90,6 +85,28 @@ from ._generated.protocol import (
 UINT32_MAX = 2**32 - 1
 _Root = TypeVar("_Root")
 _UNSET = object()
+
+
+class EventType(StrEnum):
+    """Public convenience enum composed from generated event discriminators."""
+
+    TIMER_STARTED = _wire.TimerEventType.TIMER_STARTED
+    TIMER_SPLIT = _wire.TimerEventType.TIMER_SPLIT
+    TIMER_SKIPPED = _wire.TimerEventType.TIMER_SKIPPED
+    TIMER_UNDO = _wire.TimerEventType.TIMER_UNDO
+    TIMER_PHASE_CHANGED = _wire.TimerEventType.TIMER_PHASE_CHANGED
+    TIMER_RESET = get_args(get_type_hints(_wire.ResetEvent)["type"])[0]
+    RUN_CHANGED = _wire.ChangedEventType.RUN_CHANGED
+    CONTEXT_CHANGED = _wire.ChangedEventType.CONTEXT_CHANGED
+
+
+class GameTimeOperation(StrEnum):
+    """Public convenience enum composed from generated game-time operations."""
+
+    INITIALIZE = _wire.GameControlOperation.INITIALIZE
+    PAUSE = _wire.GameControlOperation.PAUSE
+    RESUME = _wire.GameControlOperation.RESUME
+    SET = get_args(get_type_hints(_wire.GameSetParams)["operation"])[0]
 
 
 class _View(RootModel[_Root]):
@@ -152,33 +169,33 @@ class BridgeEvent(_View[_wire.BridgeEvent]):
 
     @property
     def session_id(self) -> int:
-        return self.root.root.session_id
+        return self.root.session_id
 
     @property
     def event_sequence(self) -> int:
-        return self.root.root.event_sequence
+        return self.root.event_sequence
 
     @property
     def type(self) -> EventType:
-        return EventType(self.root.root.type)
+        return EventType(self.root.type)
 
     @property
     def timer_state(self) -> TimerState | None:
-        return self.root.root.timer_state
+        return self.root.timer_state
 
 
-class GameTimeRequest(_View[_wire.GameTimeRequest]):
+class GameTimeRequest(_View[_wire.GameControlRequest | _wire.GameSetRequest]):
     @property
     def request_id(self) -> int:
-        return self.root.root.request_id
+        return self.root.request_id
 
     @property
     def method(self) -> str:
-        return self.root.root.method
+        return self.root.method
 
     @property
     def params(self) -> GameControlParams | GameSetParams:
-        return self.root.root.params
+        return self.root.params
 
 
 RpcRequest = QueryRequest | TimerRequest | GameTimeRequest
@@ -186,25 +203,36 @@ RpcResult = TimerState | RunState | RunIcons | AttemptState | ContextState | Com
 _Result = TypeVar("_Result")
 
 
-class SuccessResponse(_View[_wire.SuccessResponse], Generic[_Result]):
+class SuccessResponse(
+    _View[
+        _wire.TimerStateResponse
+        | _wire.RunStateResponse
+        | _wire.RunIconsResponse
+        | _wire.AttemptStateResponse
+        | _wire.ContextStateResponse
+        | _wire.CompletedCountResponse
+        | _wire.ControlSuccessResponse
+    ],
+    Generic[_Result],
+):
     @model_validator(mode="after")
     def validate_icons(self) -> Self:
-        value = self.root.root.result
+        value = self.root.result
         if isinstance(value, _wire.RunIcons):
             RunIcons.model_validate(value)
         return self
 
     @property
     def request_id(self) -> int:
-        return self.root.root.request_id
+        return self.root.request_id
 
     @property
     def session_id(self) -> int:
-        return self.root.root.session_id
+        return self.root.session_id
 
     @property
     def result(self) -> _Result:
-        value = self.root.root.result
+        value = self.root.result
         if isinstance(value, _wire.RunIcons):
             return cast(_Result, RunIcons.model_validate(value))
         return cast(_Result, value)
